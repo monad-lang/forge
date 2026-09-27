@@ -1,0 +1,10 @@
+[mote]
+name = "forge-scene"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.forge-core]
+path = "../forge-core"
+
+[dependencies.forge-math]
+path = "../forge-math"

@@ -1,0 +1,28 @@
+/target
+history.txt
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+docs/book
+
+# Nightly release artifacts (scripts/nightly-release.sh). Build output: the
+# release step uploads them from dist/, which git need not track.
+dist/
+
+# Plans directory for implementation planning
+plans
+
+# Agents
+.opencode
+
+# Python bytecode from the one-off migration scripts in scripts/
+__pycache__/
+*.pyc
