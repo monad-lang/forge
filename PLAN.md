@@ -208,9 +208,38 @@ etc.
 3. `App.run` main loop (cold -> warm -> command flush -> hot -> present)
 4. Minimal demo: single-system app that increments a counter resource
 
+## Known blocking toolchain bug (2026-10-03)
+
+`forge-core`'s `despawn`, `insert_component`, and `remove_component` are
+implemented per the design below, but are blocked by a confirmed monad
+runtime bug: reconstructing `World`/`ComponentStorage` from a world that
+already holds an `Any`-boxed `Archetype` (i.e. anything spawned with real
+component data) silently corrupts an unrelated sibling field's list —
+observed as a single `List.append`/`++` producing 2 entries instead of 1.
+Verified down to a minimal 2-function, no-ECS-logic repro; not a bug in the
+code here. Filed as
+`plans-monad/implementations/2026-10-03-any-boxed-struct-reconstruction-corrupts-sibling-field.md`,
+which also documents three smaller, already-worked-around codegen gaps hit
+in the same session (unannotated dot-access lambdas, struct `with`-update
+silently no-op'ing, and a nested-recursive-call crash). `spawn` itself is
+unaffected (confirmed safe to call repeatedly), as is read-only `query_iter`.
+The corresponding tests (`ecs_mutation_tests.mo`, `change_detection_tests.mo`)
+are written correctly and kept in their own files — isolated so the
+toolchain crash they trigger doesn't take down the passing tests
+(`ecs_tests.mo`, `query_tests.mo`, `commands_tests.mo`) sharing a workspace
+test run — and should start passing with no further change once this lands
+upstream.
+
 ## What is deferred from the original plan
 
-- **Rendering (P7)**: requires GPU compute (`computational` mote doesn't exist yet). Deferred.
+- **Rendering (P7)**: requires GPU compute (`computational` mote doesn't
+  exist yet). Deferred. `monad` is expected to eventually gain an
+  MLIR-based backend capable of GPU codegen; when that lands, rendering
+  becomes unblocked and should build on whatever GPU-compute library monad
+  ships rather than a bespoke GPU path. `forge-schedule`'s planned
+  `render_s` stage (Phase 4's `ScheduleState` enum) is the intended
+  integration point — no design change needed now, just flagged so the
+  dependency is visible next time this plan is revisited.
 - **Physics (P11)**: GJK/EPA with F64 — deferred (native backend needed for full physics; F64 ops work, but solver complexity is high).
 - **Audio (P10)**: native audio backend — deferred.
 - **Networking (P12)**: UDP transport + rollback — deferred.
@@ -232,8 +261,8 @@ monad check motes/forge-math/           # typecheck (F64 tests also run via `mon
 ## Tasks
 
 - [x] Phase 1a: workspace skeleton — 6-mote layout, `forge-core`'s `Entity` probe, all motes wired with `path` deps, `monad test -w`/`check -w` clean
-- [ ] Phase 1b: forge-core ECS (spawn/despawn/insert/remove, archetype migration, generation recycling, command buffer + flush)
-- [ ] Phase 2: forge-core query iteration + change detection
+- [~] Phase 1b: forge-core ECS — `spawn` + command buffer/flush done and tested green; `despawn`/`insert_component`/`remove_component` and archetype migration implemented but blocked by the toolchain bug above (see "Known blocking toolchain bug")
+- [~] Phase 2: forge-core query iteration done and tested green; change detection (`changed_since`/`passes_changed_filter`) implemented but blocked by the same bug (it's exercised via `insert_component`)
 - [ ] Phase 3: forge-math (Vec/Quat/Mat/intersection) — F64 known-answer tests
 - [ ] Phase 4: forge-schedule (stages, system registration, fixed timestep, command flush)
 - [ ] Phase 5: forge-scene (transform hierarchy, propagation, spawn templates)
