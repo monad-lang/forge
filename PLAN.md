@@ -331,15 +331,15 @@ Everything in Phases 1-2 was verified against the installed toolchain
 forge root, in the `devenv` shell:
 
 ```
-monad check -w                     # 27 files, 0 errors
-monad test -w                      # 166/166 tests passed
+monad check -w                     # 30 files, 0 errors
+monad test -w                      # 197/197 tests passed
 ```
 
 By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
 5 ECS mutation, 4 ECS shape, 5 query, 6 `world_m`), forge-math 75 (12 `num`,
 12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module); forge-schedule 37
-(14 `system`, 12 `schedule`, 11 cross-module); forge-scene 13 cross-module
-(`tests/scene_tests.mo`). `ecs.mo` alone also reports `ok` under a plain
+(14 `system`, 12 `schedule`, 11 cross-module); forge-scene 13 cross-module;
+forge-reactive 31 (14 `reactive`, 11 `event`, 6 cross-module). `ecs.mo` alone also reports `ok` under a plain
 `monad check` outside the shell.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
@@ -573,15 +573,41 @@ reached.
 Fixed in `ecs.mo` (`copy_row` now copies the handle too), pinned by
 `test_mid_list_swap_remove_moves_the_entity_handle`.
 
-### Phase 6: forge-reactive (P4)
+### Phase 6: forge-reactive (P4) - **done**
 
-**Mote:** `motes/forge-reactive/` (depends on `forge-core`)
+**Mote:** `motes/forge-reactive/` (depends on `forge-core` (path only), `std::ref`)
 
-1. `Signal A` built on `Ref` (atomic, fiber-safe) + a changed flag; keep the
-   dependency list minimal.
-2. `signal_map`, `signal_zip`, `signal_fold`.
-3. `EventStream A { buffer : Ref (List A), max_per_frame : U64 }` with
-   `EventWriter`/`EventReader` and frame-budgeted processing.
+As built (31 tests: 14 `reactive`, 11 `event`, 6 cross-module):
+
+- `src/reactive.mo` - `Signal A` (`value` + a `version` bumped per write);
+  `signal_new`/`signal_get`/`signal_version`/`signal_set`/`signal_update`;
+  `Derived A` (a recompute-on-read view) with `derived_get`;
+  `signal_map`/`derived_map`/`signal_zip2`/`signal_zip3`/`signal_fold`.
+- `src/event.mo` - `EventStream A` (a `Ref (List A)` + a per-frame budget);
+  `event_send`/`event_pending`/`event_drain`/`event_drain_all`/`event_clear`.
+- `src/lib.mo` re-exports both; `src/tests/reactive_tests.mo` drives them
+  together (a budgeted drain feeding a signal, a derived chain, a zip).
+
+**Everything is `IO`** (`std::ref`'s natives), and both types are
+parameterized -- so neither is `Copy` (a parameterized type cannot have a
+`Copy` instance) and both travel as `Shared (...)`; each accessor destructures
+the handle exactly once. This is the same shape `init` uses for `ReaderT`'s
+non-`Copy` environment.
+
+**Two deliberate design choices, both simplifications of the plan:**
+
+1. **`Derived` recomputes on read** instead of a subscription graph. A real
+   graph needs mutable listener lists and set-time callbacks; a thunk that
+   reads its sources is always current and needs no invalidation. A memoizing
+   cache (last value + the version it was computed at) is the TODO.
+2. **`EventStream` is one queue, not `EventWriter`/`EventReader` handles.**
+   `event_drain` returns the batch under the budget; a per-reader cursor would
+   be the next step if two consumers ever need independent views.
+
+`event_drain`'s read-then-truncate is a `Ref.get` followed by a `Ref.set`,
+NOT one atomic `Ref.update`: `Ref.update` returns the NEW value, so it cannot
+hand back the prefix it removed. That is sound for one writer + one reader per
+frame, which is the intended shape, and it is documented in the module.
 
 ### Phase 7: forge-app (P5)
 
@@ -657,6 +683,6 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 3: forge-math (`num` F64 layer, `Vec2/3/4`, `Quat`, `Mat3/4`, `Ray`/`Plane`/`AABB`/`Sphere`; 52 unit + 11 integration tests)
 - [x] Phase 4: forge-schedule (`ScheduleState`/`System`/`Schedule`, conflict batching as metadata, fixed timestep + `Time`); systems are the PURE `WorldM Id` (37 tests)
 - [x] Phase 5: forge-scene (`Transform`/`Parent`/`GlobalTransform`, typed `Any` accessors, top-down propagation; 13 tests). Fixed a forge-core swap-remove bug this phase surfaced.
-- [ ] Phase 6: forge-reactive (Signal/EventStream over `Ref` + `WorldM`)
+- [x] Phase 6: forge-reactive (`Signal`/`Derived` over `Ref`, `EventStream` with a per-frame budget; 31 tests). All IO; both types travel as `Shared`.
 - [ ] Phase 7: forge-app (builder, plugin, IO main loop, minimal demo)
 - [ ] Phase 8: forge-render (RenderCommand, extract, Renderer interface, soft backend)
