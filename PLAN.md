@@ -331,15 +331,16 @@ Everything in Phases 1-2 was verified against the installed toolchain
 forge root, in the `devenv` shell:
 
 ```
-monad check -w                     # 30 files, 0 errors
-monad test -w                      # 197/197 tests passed
+monad check -w                     # 36 files, 0 errors
+monad test -w                      # 226/226 tests passed
 ```
 
 By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
 5 ECS mutation, 4 ECS shape, 5 query, 6 `world_m`), forge-math 75 (12 `num`,
 12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module); forge-schedule 37
 (14 `system`, 12 `schedule`, 11 cross-module); forge-scene 13 cross-module;
-forge-reactive 31 (14 `reactive`, 11 `event`, 6 cross-module). `ecs.mo` alone also reports `ok` under a plain
+forge-reactive 31 (14 `reactive`, 11 `event`, 6 cross-module); forge-render 29
+(7 `command`, 8 `backend`, 2 `soft` (re-exported), 13 cross-module). `ecs.mo` alone also reports `ok` under a plain
 `monad check` outside the shell.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
@@ -619,32 +620,44 @@ frame, which is the intended shape, and it is documented in the module.
    fixed-update accumulator → update → render → present → cleanup.
 4. Minimal demo: a single-system app that increments a counter resource.
 
-### Phase 8: forge-render — backend-agnostic render interface (P6)
+### Phase 8: forge-render - backend-agnostic render interface (P6) - **done**
 
-**Mote:** `motes/forge-render/` (depends on `forge-core`, `forge-math`,
-`forge-scene`)
+**Mote:** `motes/forge-render/` (depends on `forge-core`, `forge-math`, `forge-scene`)
 
-The whole point: **the core never knows which backend draws.** MLIR/GPU and
-WebGL become backends behind this interface, not changes to the core.
+The whole point: **the core never knows which backend draws.** `extract` turns
+a `World` into a pure `List RenderCommand`, and a `Renderer` consumes it;
+adding a GPU or WebGL backend is a new `Renderer` variant, not a core change.
 
-1. `src/command.mo`: `RenderCommand` as a `#[derive Copy Debug]` data enum
-   (`draw_mesh`, `set_camera`, `clear`, ...), `Camera`, `MeshHandle`,
-   `MaterialHandle`, `Color`.
-2. `src/extract.mo`: `extract (world : World) : List RenderCommand` — a pure
-   read of the `World` at the `render_s` stage. No backend types leak in.
-3. `src/backend.mo`: the `Renderer` interface — `submit : List RenderCommand
-   -> IO Unit`, `present : IO Unit`, `resize : I64 -> I64 -> IO Unit`,
-   `shutdown : IO Unit`.
-4. `src/soft.mo`: a headless/soft backend that records commands (for tests
-   and CI); this is what makes the pipeline testable without a GPU.
-5. Tests: extract produces the expected commands for a scene; the soft
-   backend records them.
+As built (29 tests: 7 `command`, 8 `backend`, 2 `soft`, 13 cross-module):
 
-**Later backends (no core change):**
-- **WebGL**: a `web_wasm`-backed `Renderer` — WebGL context via a new
-  `web_wasm` extern family + `jsgen` glue, drawing `RenderCommand`s.
-- **GPU/MLIR**: a `Renderer` whose `submit` lowers to monad's MLIR/GPU
-  backend (`Buf E`, kernel dispatch) once that lands.
+- `src/command.mo` - `MeshHandle`/`MaterialHandle`/`Color`/`Camera`, and
+  `RenderCommand` as a **payload-carrying `Copy` enum** (`clear_cmd`,
+  `set_camera_cmd`, `draw_mesh_cmd`, `present_cmd`) with smart constructors
+  and `command_kind`/`is_draw`/`count_draws`.
+- `src/backend.mo` - the `Renderer` interface as an **enum** (`soft` records
+  into a `Ref (List RenderCommand)`, `headless` drops), with `submit`,
+  `present`, `resize`, `shutdown`, and inspection (`recorded`, `size`).
+- `src/soft.mo` - thin named entry point for the recording backend
+  (`soft::new`, `soft::recorded`).
+- `src/extract.mo` - the `forge.mesh` component, its typed `Any` accessor, and
+  `extract (world) (camera) (background) : List RenderCommand` =
+  `clear, set_camera, draw* <, present>`. An entity is drawn iff it carries
+  BOTH a mesh and a `GlobalTransform`.
+- `src/tests/render_tests.mo` - the whole pipeline with no GPU: build a scene,
+  extract, hand it to the soft backend, assert the recording.
+
+**Two design points:**
+
+1. `Renderer` is an **enum, not a record of closures**. A struct cannot hold a
+   `-> IO Unit` field (`term_to_expr_value: unsupported term shape`); an enum
+   also makes the backend choice exhaustive.
+2. `extract` takes the `Camera` as a **plain argument** rather than reading a
+   camera resource out of the world. Components are `Any` and a camera is a
+   natural value for the caller (the app) to own; storing it would add an
+   interning round trip for no benefit yet.
+
+**Later backends (no core change):** a `web_wasm` WebGL `Renderer` variant, and
+a GPU/MLIR one, exactly as the interface promises.
 
 ## What is deferred
 
@@ -685,4 +698,4 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 5: forge-scene (`Transform`/`Parent`/`GlobalTransform`, typed `Any` accessors, top-down propagation; 13 tests). Fixed a forge-core swap-remove bug this phase surfaced.
 - [x] Phase 6: forge-reactive (`Signal`/`Derived` over `Ref`, `EventStream` with a per-frame budget; 31 tests). All IO; both types travel as `Shared`.
 - [ ] Phase 7: forge-app (builder, plugin, IO main loop, minimal demo)
-- [ ] Phase 8: forge-render (RenderCommand, extract, Renderer interface, soft backend)
+- [x] Phase 8: forge-render (`RenderCommand` enum, `extract`, `Renderer` enum + soft/headless backends; 29 tests). The core knows no backend.

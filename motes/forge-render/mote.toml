@@ -1,0 +1,14 @@
+[mote]
+name = "forge-render"
+version = "0.1.0"
+edition = "2026"
+
+# Keys are `use`-spelled, so `_` not `-` (the directories keep their names).
+[dependencies.forge_core]
+path = "../forge-core"
+
+[dependencies.forge_math]
+path = "../forge-math"
+
+[dependencies.forge_scene]
+path = "../forge-scene"
