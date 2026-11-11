@@ -20,9 +20,12 @@ A bare `mote.toml` with just `[mote]` (name/version/edition) is enough for a
 leaf mote. Cross-mote dependencies use explicit path entries:
 
 ```toml
-[dependencies.forge-core]
-path = "../forge-core"
+[dependencies.forge_core]        # the KEY is what `use` spells
+path = "../forge-core"           # the directory may keep its hyphen
 ```
+
+then `use forge_core::ecs {World}`. A hyphen in the key is a parse error at
+the `use`, so key it with `_`.
 
 No `init`/`std`/`runtime` deps are needed: the installed toolchain supplies
 those (a nightly unpacks `init`/`std`/`llvm`/`runtime` sources beside the
@@ -144,6 +147,9 @@ real thing). Non-obvious enough to have cost real time — do not re-derive them
 | two files with the same `#[test]` name | test-driver `qualify_modules failed`; keep test names unique per module. |
 | calling a class **DEFAULT** method (`MonadState.get_map`/`modify`) that your instance omits | fails at LLVM **lowering** with `use of undefined value '@modify_get'` — AFTER `check` passes. The compiler splices the default body and it references the class-level method name. Declare `modify`/`get_map` in your own instance (see `world_m.mo`). |
 | an INLINE application of a `[Constraint]`-bearing def used as an **argument** (e.g. `WorldM.run_state (WorldM.put w) s`) | compiles to a broken partial shim; the test driver dies `driver exited -1` with no diagnostic (`check` is clean). Hoist it into a top-level `def` or a typed `let` first. |
+| reaching a DEPENDENCY's module | `use lib::...` always means the **current** mote's own root. A dependency is reached by its `mote.toml` **dependency key**: `use forge_core::ecs {...}`. |
+| a `[dependencies.forge-core]` key with a hyphen | the key is what `use` must spell, and a hyphen is not an identifier (`use forge-core::...` is a parse error). Key it `[dependencies.forge_core]` (path stays `../forge-core`) and write `use forge_core::...`. |
+| `#[derive Copy Clone Debug]` on an **enum** | the Copy/Clone derive *macros* must be imported by name: `use std::derive {derive_copy, derive_clone, derive_debug}`. An empty `use std::derive {}` is enough for a *struct* (the in-scope `Copy`/`Clone` class names substitute) but on an enum it fails with `derive_clone is not imported`. |
 
 ### The dev shell must provide a STATIC Boehm GC
 
@@ -325,14 +331,14 @@ Everything in Phases 1-2 was verified against the installed toolchain
 forge root, in the `devenv` shell:
 
 ```
-monad check -w                     # 22 files, 0 errors
-monad test -w                      # 115/115 tests passed
+monad check -w                     # 25 files, 0 errors
+monad test -w                      # 152/152 tests passed
 ```
 
 By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
 5 ECS mutation, 4 ECS shape, 5 query, 6 `world_m`), forge-math 75 (12 `num`,
-12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module in
-`tests/math_tests.mo`). `ecs.mo` alone also reports `ok` under a plain
+12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module); forge-schedule 37
+(14 `system`, 12 `schedule`, 11 cross-module). `ecs.mo` alone also reports `ok` under a plain
 `monad check` outside the shell.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
@@ -490,24 +496,37 @@ As built (52 unit tests + 11 integration tests, all green):
 **Acceptance met:** `monad check -w` clean, `monad test -w` green (see
 "Verified end-to-end").
 
-### Phase 4: forge-schedule (P2)
+### Phase 4: forge-schedule (P2) - **done**
 
 **Mote:** `motes/forge-schedule/` (depends on `forge-core`)
 
-1. `ScheduleState` enum: `start_s`, `pre_init_s`, `init_s`, `first_s`,
-   `pre_update_s`, `state_transition_s`, `fixed_update_s`, `update_s`,
-   `post_update_s`, `last_s`, `render_s`, `cleanup_s`.
-2. `System` = `{ name : String, stage : ScheduleState, run : WorldM IO Unit }`
-   (the app's base monad). A pure variant takes `WorldM Id`.
-3. `Schedule { systems : List System }`; `add_system`, `add_system_to`.
-4. `run_schedule (world : World) (schedule : Schedule) : IO World` — run
-   systems in stage order; flush the command buffer between stages.
-5. Fixed timestep: `Time` resource with `fixed_accumulator`; `fixed_update_s`
-   loops while `accumulator >= fixed_delta`.
-6. **Parallel batches**: now that fibers are real, systems in a stage with no
-   read/write conflict run via `std::concurrent::combine.all`; conflicting
-   systems stay sequential. Batches are computed from each system's declared
-   `reads`/`writes` (Phase 1's `Query`).
+As built (37 tests: 14 `system`, 12 `schedule`, 11 in `tests/schedule_tests.mo`):
+
+- `src/system.mo` - the 12-stage `ScheduleState` enum with `stage_ordinal`
+  (pipeline order, not declaration order), `stage_name`, `all_stages`; the
+  `System` record (`name`/`stage`/`reads`/`writes`/`run`); conflict analysis
+  (`ids_overlap`, `systems_conflict`) and greedy batching (`batches`,
+  `batch_count`); and the fixed-timestep `Clock` (`clock_advance` -> `{clock,
+  steps}`).
+- `src/schedule.mo` - the `Schedule` builder (`add_system`, `add_system_to`),
+  stage queries, and the runners: `run_stage`, `run_schedule[_pure]`,
+  `run_fixed_steps`. Plus the `Time` resource (`time_advance` folds
+  `clock_advance` and carries `fixed_steps`).
+- `src/lib.mo` re-exports both; `src/tests/schedule_tests.mo` drives the
+  pipeline (frames, fixed steps, ordering, batching-as-metadata).
+
+**Two deliberate deviations from the plan**, both because the pure schedule is
+what `monad test` can actually run:
+
+1. **`System` carries `WorldM Id Unit`, not `WorldM IO Unit`.** Everything is a
+   pure `World -> World` schedule, so it runs (and is tested) with no IO. The
+   `WorldM IO` app variant is Phase 7.
+2. **Systems run in registration order within a stage, sequentially.** The
+   conflict-based `batches` are computed and tested, and exposed as
+   `stage_batches` metadata, but *executing* a batch on fibers -- with the
+   `CommandBuffer` handle a `WorldM IO` system needs to enqueue anything --
+   is Phase 7's job. A pure reorder would also be wrong: a later system may
+   depend on an earlier one's side effect with no declared read/write overlap.
 
 ### Phase 5: forge-scene (P3)
 
@@ -602,7 +621,7 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 1: forge-core affine-safe ECS (`Entity`/`ComponentId`/`Column`/`Archetype`/`World`, `spawn`/`despawn`/`insert`/`remove`/`set`, change ticks; 13 in-`ecs` tests + 5 test files, all green)
 - [x] Phase 2: forge-core `WorldM` transformer stack (`StateT World M`, `Monad`/`MonadState`, `PureWorld` alias; exercised by `world_m_tests.mo`)
 - [x] Phase 3: forge-math (`num` F64 layer, `Vec2/3/4`, `Quat`, `Mat3/4`, `Ray`/`Plane`/`AABB`/`Sphere`; 52 unit + 11 integration tests)
-- [ ] Phase 4: forge-schedule (stages, systems over `WorldM`, fixed timestep, parallel batches)
+- [x] Phase 4: forge-schedule (`ScheduleState`/`System`/`Schedule`, conflict batching as metadata, fixed timestep + `Time`); systems are the PURE `WorldM Id` (37 tests)
 - [ ] Phase 5: forge-scene (transform hierarchy, propagation, spawn templates)
 - [ ] Phase 6: forge-reactive (Signal/EventStream over `Ref` + `WorldM`)
 - [ ] Phase 7: forge-app (builder, plugin, IO main loop, minimal demo)

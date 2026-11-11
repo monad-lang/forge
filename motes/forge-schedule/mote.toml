@@ -3,5 +3,5 @@ name = "forge-schedule"
 version = "0.1.0"
 edition = "2026"
 
-[dependencies.forge-core]
+[dependencies.forge_core]
 path = "../forge-core"
