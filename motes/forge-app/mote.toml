@@ -3,17 +3,18 @@ name = "forge-app"
 version = "0.1.0"
 edition = "2026"
 
-[dependencies.forge-core]
+# Keys are `use`-spelled, so `_` not `-` (directories keep their hyphens).
+[dependencies.forge_core]
 path = "../forge-core"
 
-[dependencies.forge-math]
+[dependencies.forge_math]
 path = "../forge-math"
 
-[dependencies.forge-schedule]
+[dependencies.forge_schedule]
 path = "../forge-schedule"
 
-[dependencies.forge-scene]
+[dependencies.forge_scene]
 path = "../forge-scene"
 
-[dependencies.forge-reactive]
-path = "../forge-reactive"
+[dependencies.forge_render]
+path = "../forge-render"

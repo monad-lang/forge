@@ -331,8 +331,8 @@ Everything in Phases 1-2 was verified against the installed toolchain
 forge root, in the `devenv` shell:
 
 ```
-monad check -w                     # 36 files, 0 errors
-monad test -w                      # 226/226 tests passed
+monad check -w                     # 39 files, 0 errors
+monad test -w                      # 241/241 tests passed
 ```
 
 By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
@@ -340,7 +340,8 @@ By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
 12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module); forge-schedule 37
 (14 `system`, 12 `schedule`, 11 cross-module); forge-scene 13 cross-module;
 forge-reactive 31 (14 `reactive`, 11 `event`, 6 cross-module); forge-render 29
-(7 `command`, 8 `backend`, 2 `soft` (re-exported), 13 cross-module). `ecs.mo` alone also reports `ok` under a plain
+(7 `command`, 8 `backend`, 2 `soft` (re-exported), 13 cross-module);
+forge-app 15 (8 `app`, 2 `plugin`, 5 cross-module). `ecs.mo` alone also reports `ok` under a plain
 `monad check` outside the shell.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
@@ -610,15 +611,38 @@ NOT one atomic `Ref.update`: `Ref.update` returns the NEW value, so it cannot
 hand back the prefix it removed. That is sound for one writer + one reader per
 frame, which is the intended shape, and it is documented in the module.
 
-### Phase 7: forge-app (P5)
+### Phase 7: forge-app - App builder, plugin, IO main loop (P5) - **done**
 
-**Mote:** `motes/forge-app/` (depends on all)
+**Mote:** `motes/forge-app/` (depends on all five others)
 
-1. `App` builder, `Plugin` type.
-2. `DefaultPlugins` list.
-3. `App.run : IO Unit` — the main loop: cold → warm → command flush →
-   fixed-update accumulator → update → render → present → cleanup.
-4. Minimal demo: a single-system app that increments a counter resource.
+As built (15 tests: 8 `app`, 2 `plugin`, 5 cross-module):
+
+- `src/plugin.mo` - `Plugin` = a name + an `IO Unit` setup, plus the named-only
+  constructor. `Copy` (hand-written): a plugin is a value.
+- `src/app.mo` - `App`, a PURE description (schedule + plugins + renderer +
+  initial world + camera + clear colour + frame budget); the builder
+  (`app_add_plugin`, `app_add_system`, `app_set_*`); and the loop
+  (`app_step`, `app_run`).
+- `src/tests/app_tests.mo` - the WHOLE stack on one path: forge-scene builds a
+  meshed hierarchy, forge-render extracts it, the recording backend shows the
+  frame came out `clear, set_camera, draw, present`.
+
+`app_step` is, in order: `propagate_transforms` -> `run_schedule_pure` ->
+`extract` -> `renderer_submit` + `renderer_present`. Those last two are the
+only IO in the mote, and `App` itself is inert until `app_run` -- which is
+exactly what makes the loop testable.
+
+**Deviations from the plan:**
+
+1. **`app_run` returns the final `World`**, not `IO Unit`. A caller that does
+   not want it ignores it, and every frame's effect stays observable in a test.
+2. **No fixed-timestep accumulator in the loop yet.** forge-schedule's `Time`
+   models it and is tested; wiring it in needs a real clock source (and so real
+   IO), which this mote does not yet have. `app_run` runs a fixed frame count.
+3. **No `DefaultPlugins` list.** There is nothing in the stack a default set
+   would have to register yet (the renderer and camera are plain `App` fields,
+   not resources). It becomes meaningful once there are resource-bearing
+   plugins to package.
 
 ### Phase 8: forge-render - backend-agnostic render interface (P6) - **done**
 
@@ -697,5 +721,5 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 4: forge-schedule (`ScheduleState`/`System`/`Schedule`, conflict batching as metadata, fixed timestep + `Time`); systems are the PURE `WorldM Id` (37 tests)
 - [x] Phase 5: forge-scene (`Transform`/`Parent`/`GlobalTransform`, typed `Any` accessors, top-down propagation; 13 tests). Fixed a forge-core swap-remove bug this phase surfaced.
 - [x] Phase 6: forge-reactive (`Signal`/`Derived` over `Ref`, `EventStream` with a per-frame budget; 31 tests). All IO; both types travel as `Shared`.
-- [ ] Phase 7: forge-app (builder, plugin, IO main loop, minimal demo)
+- [x] Phase 7: forge-app (`App` builder, `Plugin`, `app_step`/`app_run` IO loop, demo; 15 tests).
 - [x] Phase 8: forge-render (`RenderCommand` enum, `extract`, `Renderer` enum + soft/headless backends; 29 tests). The core knows no backend.
