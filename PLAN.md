@@ -221,6 +221,20 @@ with a `#[test]`, don't just `check` it.
 `BOrd`, `Debug`, `Lens`, `Copy`, `Clone` are registered). Key maps by a
 `Copy` id (`U64`) rather than by a derived-hash struct.
 
+### The F64 surface is tiny — forge-math supplies the rest
+
+`init::number` gives `F64` only `+ - * /` and `beq`/`lt`/`gt` (all `#[native]`:
+`f64_add`/`sub`/`mul`/`div`/`eq`/`lt`/`gt`), plus `F64.to_string`. **There is no
+`sqrt`, `sin`, `cos`, `abs`, `floor`, `tan`, and no integer<->float conversion
+of any kind.** Float literals (`3.14159`, and `0.5` for halving) do work.
+
+`motes/forge-math/src/num.mo` therefore builds the missing layer out of the
+four operators and the comparisons: `f64_abs`, `f64_min`/`f64_max`/`f64_clamp`,
+a **Newton-Raphson `f64_sqrt`** (exact for a perfect square — the tests assert
+exact values), and a Maclaurin `f64_sin`/`f64_cos` after range reduction to
+`|x| <= pi/2` (accurate to ~1e-8). `num` is private to forge-math; the public
+`lib.mo` re-exports only the vectors/quaternion/matrix/intersection surface.
+
 ### Targets
 
 `monad build --target wasm32-unknown-unknown` (web, JS imports) and
@@ -311,13 +325,15 @@ Everything in Phases 1-2 was verified against the installed toolchain
 forge root, in the `devenv` shell:
 
 ```
-monad check -w                     # 16 files, 0 errors
-monad test -w                      # 40/40 tests passed
+monad check -w                     # 22 files, 0 errors
+monad test -w                      # 115/115 tests passed
 ```
 
-The 40: 13 in-`ecs` unit tests, 4 change-detection, 3 commands, 5 ECS mutation,
-4 ECS shape, 5 query, 6 `world_m`. `ecs.mo` alone also reports `ok` under a
-plain `monad check` outside the shell.
+By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
+5 ECS mutation, 4 ECS shape, 5 query, 6 `world_m`), forge-math 75 (12 `num`,
+12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module in
+`tests/math_tests.mo`). `ecs.mo` alone also reports `ok` under a plain
+`monad check` outside the shell.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
 one (`monad check`) was a type error; the other three type-checked and only
@@ -439,24 +455,40 @@ preserving it, `put`, `modify`, the `MonadState.get_map` class method, and the
 instances type-checked long before they ran, and three separate codegen/lowering
 bugs only appeared when the test was executed.
 
-### Phase 3: forge-math (P1)
+### Phase 3: forge-math (P1) — **done**
 
 **Mote:** `motes/forge-math/`
 
-1. `src/vec.mo`: `Vec2`/`Vec3`/`Vec4` as `#[derive Copy Clone Debug]` structs
-   with `.x`/`.y`/`.z`/`.w`; `add`/`sub`/`scale`/`dot`/`cross`/`normalize`/
-   `length`.
-2. `src/quat.mo`: `Quat` (derive Copy); `from_axis_angle`, `mul`, `rotate`,
-   `slerp`, `normalize`.
-3. `src/mat.mo`: `Mat3`/`Mat4` (derive Copy); `identity`, `translate`,
-   `rotate`, `scale`, `perspective`, `orthographic`, `look_at`, `mul`.
-4. `src/intersect.mo`: `Ray`/`Plane`/`AABB`/`Sphere` (derive Copy);
-   `ray_intersects_aabb`, `aabb_intersects_aabb`, `sphere_intersects_sphere`,
-   `ray_intersects_sphere`, `ray_intersects_plane`.
-5. Tests: F64 known-answer tests; `F64.beq` for exact cases, epsilon compares
-   where a computation is inexact.
-6. Use dot access directly (it works now); derive `Copy` on every POD type so
-   formulas read naturally.
+As built (52 unit tests + 11 integration tests, all green):
+
+- `src/num.mo` — the F64 layer above (`f64_sqrt`/`sin`/`cos`/`abs`/`min`/`max`/
+  `clamp`, `pi`/`tau`, `f64_approx`). Not exported from `lib.mo`.
+- `src/vec.mo` — `Vec2`/`Vec3`/`Vec4` as monomorphic `#[derive Copy Clone Debug]`
+  structs with `.x`/`.y`/`.z`/`.w`. Operations are suffixed by size (`v3_add`,
+  `v2_dot`, ...) rather than class-based. `v3_cross`, `v3_normalize`,
+  `v3_reflect`, `v2_perp`, `v4_to_v3` (perspective divide as a value).
+- `src/quat.mo` — `Quat` (`w = cos(theta/2)`); `quat_from_axis_angle`,
+  `quat_mul` (Hamilton), `quat_rotate` (`v + 2 q_v x (q_v x v + w v)`),
+  `quat_rotate_inv`, `quat_normalize`, `quat_slerp` (**nlerp** — there is no
+  `acos`), `quat_same_rotation` (sign-insensitive), `quat_angle`.
+- `src/mat.mo` — `Mat3`/`Mat4` stored as **columns of `VecN`** (column-major,
+  which is what a GPU wants and makes `m * v` a weighted column sum).
+  `mat4_identity`, `translate`, `scale`, `mat4_from_quat`,
+  `mat4_rotate_axis_angle`, `mat4_trs` (`T*R*S`), `mat4_transform_point` /
+  `_dir`, `mat4_mul`, `mat4_mul_vec4`, `mat4_transpose`, `mat4_perspective`,
+  `mat4_orthographic`, `mat4_look_at`, `mat4_to_mat3`. **One stated convention:**
+  right-handed, depth to `[-1, 1]` (OpenGL).
+- `src/intersect.mo` — `Ray`/`Plane`/`AABB`/`Sphere`;
+  `ray_intersects_sphere`, `ray_intersects_aabb` (slab method),
+  `aabb_intersects_aabb`, `sphere_intersects_sphere`, `ray_intersects_plane`,
+  `plane_distance`, `aabb_contains`.
+- `src/tests/math_tests.mo` — the cross-module pipeline: MVP composition, TRS
+  ordering, a projection landing a point at NDC center, slerp, and camera-ray
+  picking.
+- `src/lib.mo` re-exports the whole surface (not `num`).
+
+**Acceptance met:** `monad check -w` clean, `monad test -w` green (see
+"Verified end-to-end").
 
 ### Phase 4: forge-schedule (P2)
 
@@ -569,7 +601,7 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 0: toolchain re-baseline (gaps fixed, affine rule recorded, old bug confirmed gone)
 - [x] Phase 1: forge-core affine-safe ECS (`Entity`/`ComponentId`/`Column`/`Archetype`/`World`, `spawn`/`despawn`/`insert`/`remove`/`set`, change ticks; 13 in-`ecs` tests + 5 test files, all green)
 - [x] Phase 2: forge-core `WorldM` transformer stack (`StateT World M`, `Monad`/`MonadState`, `PureWorld` alias; exercised by `world_m_tests.mo`)
-- [ ] Phase 3: forge-math (Vec/Quat/Mat/intersection, derive Copy, F64 known-answer tests)
+- [x] Phase 3: forge-math (`num` F64 layer, `Vec2/3/4`, `Quat`, `Mat3/4`, `Ray`/`Plane`/`AABB`/`Sphere`; 52 unit + 11 integration tests)
 - [ ] Phase 4: forge-schedule (stages, systems over `WorldM`, fixed timestep, parallel batches)
 - [ ] Phase 5: forge-scene (transform hierarchy, propagation, spawn templates)
 - [ ] Phase 6: forge-reactive (Signal/EventStream over `Ref` + `WorldM`)
