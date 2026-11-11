@@ -6,6 +6,16 @@
   ...
 }:
 
+let
+  # `monad` links Boehm GC STATICALLY on Linux
+  # (`-Wl,-Bstatic -lgc -Wl,-Bdynamic`, see the toolchain's llvm/src/link.mo),
+  # so the link needs `libgc.a`. The plain `pkgs.boehmgc` ships only the
+  # shared library (`libgc.so`), which is why `monad test`/`monad run` died
+  # with "cannot find -lgc ... have you installed the static version of the
+  # gc library ?". The packaged `monad` and the project's own dev shell both
+  # use this override.
+  boehmgc-static = pkgs.boehmgc.override { enableStatic = true; };
+in
 {
 
   # https://devenv.sh/packages/
@@ -14,7 +24,7 @@
     lld
     llvm
     clang
-    boehmgc
+    boehmgc-static
   ];
 
   # https://devenv.sh/basics/

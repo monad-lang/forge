@@ -1,26 +1,26 @@
-use lib::ecs {Entity, World, empty_world, spawn}
-use std::list {List.length}
+// Basic spawn/shape tests over the public forge-core ECS surface.
 
-def has_pos : Pair World Entity :=
+use lib::ecs {Entity, World, Spawned, spawn, empty_world, world_archetype_count, entity_gen}
+
+def has_pos : Spawned :=
     spawn empty_world [Pair.pair "pos" (Any.any 1u64)]
 
 #[test]
 def test_spawn_lands_in_matching_archetype : Bool :=
-    let result : Pair World Entity := has_pos in
-    let world := result.first in
-    let archetypes := world.storage.archetypes in
-    I64.beq (List.length archetypes) 1
+    I64.beq (world_archetype_count has_pos.world) 1
 
 #[test]
 def test_spawn_assigns_generation_zero : Bool :=
-    let result : Pair World Entity := has_pos in
-    let entity := result.second in
-    U64.beq entity.generation 0u64
+    U64.beq (entity_gen has_pos.entity) 0u64
 
 #[test]
 def test_double_spawn_same_archetype : Bool :=
-    let first : Pair World Entity := has_pos in
-    let second : Pair World Entity := spawn first.first [Pair.pair "pos" (Any.any 2u64)] in
-    let world := second.first in
-    let archetypes := world.storage.archetypes in
-    I64.beq (List.length archetypes) 1
+    let first : Spawned := spawn empty_world [Pair.pair "pos" (Any.any 1u64)] in
+    let second : Spawned := spawn first.world [Pair.pair "pos" (Any.any 2u64)] in
+    I64.beq (world_archetype_count second.world) 1
+
+#[test]
+def test_distinct_component_sets_get_distinct_archetypes : Bool :=
+    let first : Spawned := spawn empty_world [Pair.pair "pos" (Any.any 1u64)] in
+    let second : Spawned := spawn first.world [Pair.pair "pos" (Any.any 1u64), Pair.pair "vel" (Any.any 1u64)] in
+    I64.beq (world_archetype_count second.world) 2

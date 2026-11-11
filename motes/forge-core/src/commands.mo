@@ -2,7 +2,7 @@
 // `CommandBuffer`, which `flush` applies to a `World` in order. Lets a
 // "system" describe edits without taking `World` by value itself.
 
-use lib::ecs {Entity, World, spawn, despawn, insert_component, remove_component}
+use lib::ecs {Entity, World, Spawned, spawn, despawn, insert_component, remove_component}
 
 pub type Command {
     spawn_cmd (components : List (Pair String Any)),
@@ -25,25 +25,25 @@ pub def empty_commands : Commands := { buffer := empty_buffer : Commands }
 
 pub def commands_spawn (cmds : Commands) (components : List (Pair String Any)) : Commands :=
     let pending := cmds.buffer.commands in
-    { buffer := { commands := pending ++ [Command.spawn_cmd components] : CommandBuffer } : Commands }
+    { buffer := { commands := List.append pending [Command.spawn_cmd components] : CommandBuffer } : Commands }
 
 pub def commands_despawn (cmds : Commands) (entity : Entity) : Commands :=
     let pending := cmds.buffer.commands in
-    { buffer := { commands := pending ++ [Command.despawn_cmd entity] : CommandBuffer } : Commands }
+    { buffer := { commands := List.append pending [Command.despawn_cmd entity] : CommandBuffer } : Commands }
 
 pub def commands_insert (cmds : Commands) (entity : Entity) (key : String) (value : Any) : Commands :=
     let pending := cmds.buffer.commands in
-    { buffer := { commands := pending ++ [Command.insert_cmd entity key value] : CommandBuffer } : Commands }
+    { buffer := { commands := List.append pending [Command.insert_cmd entity key value] : CommandBuffer } : Commands }
 
 pub def commands_remove (cmds : Commands) (entity : Entity) (key : String) : Commands :=
     let pending := cmds.buffer.commands in
-    { buffer := { commands := pending ++ [Command.remove_cmd entity key] : CommandBuffer } : Commands }
+    { buffer := { commands := List.append pending [Command.remove_cmd entity key] : CommandBuffer } : Commands }
 
 def apply_command (world : World) (cmd : Command) : World :=
     match cmd {
         spawn_cmd components =>
-            let spawned : Pair World Entity := spawn world components in
-            spawned.first,
+            let spawned : Spawned := spawn world components in
+            spawned.world,
         despawn_cmd entity => despawn world entity,
         insert_cmd entity key value => insert_component world entity key value,
         remove_cmd entity key => remove_component world entity key
@@ -52,9 +52,8 @@ def apply_command (world : World) (cmd : Command) : World :=
 #[terminating]
 pub def flush (world : World) (buffer : CommandBuffer) : World :=
     match buffer.commands {
-        empty => world,
-        cons cmd rest => flush (apply_command world cmd) { commands := rest : CommandBuffer },
-        _ => world
+        List.empty => world,
+        List.cons cmd rest => flush (apply_command world cmd) { commands := rest : CommandBuffer }
     }
 
 pub def flush_commands (world : World) (cmds : Commands) : World :=
