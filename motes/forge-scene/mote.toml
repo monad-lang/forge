@@ -3,8 +3,10 @@ name = "forge-scene"
 version = "0.1.0"
 edition = "2026"
 
-[dependencies.forge-core]
+# The dependency KEY is what `use` spells, and a hyphen is not an identifier,
+# so these are keyed with `_` while the directories keep their hyphenated names.
+[dependencies.forge_core]
 path = "../forge-core"
 
-[dependencies.forge-math]
+[dependencies.forge_math]
 path = "../forge-math"

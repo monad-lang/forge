@@ -331,14 +331,15 @@ Everything in Phases 1-2 was verified against the installed toolchain
 forge root, in the `devenv` shell:
 
 ```
-monad check -w                     # 25 files, 0 errors
-monad test -w                      # 152/152 tests passed
+monad check -w                     # 27 files, 0 errors
+monad test -w                      # 166/166 tests passed
 ```
 
 By mote: forge-core 40 (13 in-`ecs` unit tests, 4 change-detection, 3 commands,
 5 ECS mutation, 4 ECS shape, 5 query, 6 `world_m`), forge-math 75 (12 `num`,
 12 `vec`, 9 `quat`, 14 `mat`, 17 `intersect`, 11 cross-module); forge-schedule 37
-(14 `system`, 12 `schedule`, 11 cross-module). `ecs.mo` alone also reports `ok` under a plain
+(14 `system`, 12 `schedule`, 11 cross-module); forge-scene 13 cross-module
+(`tests/scene_tests.mo`). `ecs.mo` alone also reports `ok` under a plain
 `monad check` outside the shell.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
@@ -528,16 +529,49 @@ what `monad test` can actually run:
    is Phase 7's job. A pure reorder would also be wrong: a later system may
    depend on an earlier one's side effect with no declared read/write overlap.
 
-### Phase 5: forge-scene (P3)
+### Phase 5: forge-scene (P3) - **done**
 
 **Mote:** `motes/forge-scene/` (depends on `forge-core`, `forge-math`)
 
-1. `Transform` (translation `Vec3`, rotation `Quat`, scale `Vec3`) — derive
-   `Copy`.
-2. `Parent`/`Children` components.
-3. `GlobalTransform` (computed `Mat4`).
-4. Propagation system: top-down, dirty-flag, as a `WorldM IO` system.
-5. Spawn templates: `SpawnTemplate := WorldM M Entity`.
+As built (13 tests in `src/tests/scene_tests.mo`):
+
+- `src/scene.mo` - `Transform` (translation/rotation/scale), `Parent`,
+  `GlobalTransform`, all `#[derive Copy Clone Debug]`; the component-name
+  constants (`forge.transform`/`forge.global_transform`/`forge.parent`);
+  spawners (`spawn_transform`, `spawn_transform_child`, `spawn_child_at`);
+  typed accessors (`entity_transform`/`entity_global`/`entity_parent`); and
+  the top-down propagation pass (`propagate_transforms`).
+- `src/lib.mo` re-exports the surface.
+
+Component values are boxed into the ECS as `Any`; the accessors unbox them
+with a typed `let` (`match v { Any.any x => let t : Transform := x in t }`) --
+the only route back from `Any`, which erases the payload type. Everything the
+mote needs from a `World` goes through forge-core's public API
+(`get_component_named`, `query_entities`); it never reaches into
+`Archetype`/`ComponentStorage` internals, so a cross-crate field access is not
+a hazard here.
+
+**`Children` is not stored** (the plan listed it). Children are found by
+reading every entity's `Parent`, which keeps one source of truth; the children
+scan is O(n^2) in transformed entities (a TODO in the module header -- a
+`HashMap U64 (List U64)` index would make it linear).
+
+**`#[terminating]` on the propagation recursion is load-bearing:** it descends
+into a FILTERED child list, not a structural subterm, so the checker cannot
+see the decrease. (A cyclic parent graph would therefore loop; component
+chains are assumed acyclic, as in every ECS.)
+
+**This phase found a real forge-core bug.** `archetype_swap_remove` moved the
+swapped row's COLUMNS but not its ENTITY handle, so after any mid-list removal
+`entities[row]` kept naming the departing entity -- and every walk by row index
+(`query_iter`, forge-scene's `all_transformed`) returned the wrong entity. It
+was invisible until forge-scene's tests exercised a depth-3 hierarchy: every
+existing forge-core test either appended rows or removed the LAST one
+(`archetype_truncate`), and a depth-2 parent/child case only ever appends, so a
+single propagation looked correct while a grandchild was silently never
+reached.
+Fixed in `ecs.mo` (`copy_row` now copies the handle too), pinned by
+`test_mid_list_swap_remove_moves_the_entity_handle`.
 
 ### Phase 6: forge-reactive (P4)
 
@@ -622,7 +656,7 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 2: forge-core `WorldM` transformer stack (`StateT World M`, `Monad`/`MonadState`, `PureWorld` alias; exercised by `world_m_tests.mo`)
 - [x] Phase 3: forge-math (`num` F64 layer, `Vec2/3/4`, `Quat`, `Mat3/4`, `Ray`/`Plane`/`AABB`/`Sphere`; 52 unit + 11 integration tests)
 - [x] Phase 4: forge-schedule (`ScheduleState`/`System`/`Schedule`, conflict batching as metadata, fixed timestep + `Time`); systems are the PURE `WorldM Id` (37 tests)
-- [ ] Phase 5: forge-scene (transform hierarchy, propagation, spawn templates)
+- [x] Phase 5: forge-scene (`Transform`/`Parent`/`GlobalTransform`, typed `Any` accessors, top-down propagation; 13 tests). Fixed a forge-core swap-remove bug this phase surfaced.
 - [ ] Phase 6: forge-reactive (Signal/EventStream over `Ref` + `WorldM`)
 - [ ] Phase 7: forge-app (builder, plugin, IO main loop, minimal demo)
 - [ ] Phase 8: forge-render (RenderCommand, extract, Renderer interface, soft backend)

@@ -319,6 +319,18 @@ pub def archetype_ids (a : Archetype) : List ComponentId := a.ids
 
 pub def archetype_rows (a : Archetype) : I64 := List.length a.entities
 
+/// The entity handle stored at `row` of an archetype (a placeholder when the
+/// row is out of range).
+pub def archetype_entity_at (a : Archetype) (row : I64) : Entity :=
+    match List.get row a.entities {
+        Option.some e => e,
+        Option.none => entity_new 0u64 0u64
+    }
+
+/// The entity handle at `row` of archetype `i` of `world`.
+pub def world_entity_at (world : World) (i : I64) (row : I64) : Entity :=
+    archetype_entity_at (storage_archetype_at world.storage i) row
+
 /// The column for `c`, if this archetype has it.
 #[terminating]
 def find_column_go (columns : List Column) (ids : List ComponentId) (want : ComponentId) : Option Column :=
@@ -406,10 +418,20 @@ def copy_row_go (columns : List Column) (from : I64) (to : I64) : List Column :=
             }
     }
 
+/// Copy row `from` into row `to`: BOTH the columns and the entity handle. The
+/// entity half is load-bearing -- swap-remove calls this to move the last row
+/// into the freed slot, and without it `entities[to]` keeps naming the departed
+/// entity, so every `archetype_row_pairs`-by-index walk (`query.mo`, and
+/// anything reading `Archetype.entities` directly) returns the wrong entity.
 def copy_row (a : Archetype) (from : I64) (to : I64) : Archetype :=
-    { key := a.key, ids := a.ids,
-      columns := copy_row_go a.columns from to,
-      entities := a.entities : Archetype }
+    let columns : List Column := copy_row_go a.columns from to in
+    match List.get from a.entities {
+        Option.none =>
+            { key := a.key, ids := a.ids, columns := columns, entities := a.entities : Archetype },
+        Option.some e =>
+            { key := a.key, ids := a.ids, columns := columns,
+              entities := set_entity_at a.entities to e 0 : Archetype }
+    }
 
 #[terminating]
 def pop_columns (columns : List Column) : List Column :=
@@ -1172,3 +1194,26 @@ def test_mark_changed_then_changed_since : Bool :=
 def test_changed_since_named_false_when_unknown : Bool :=
     let spawned : Spawned := spawn empty_world [Pair.pair "pos" (Any.any 1u64)] in
     Bool.not (changed_since_named spawned.world spawned.entity "nope" 0u64)
+
+/// REGRESSION: remove a row from the MIDDLE of an archetype, then check that
+/// the row swapped into its slot carries the right entity. `archetype_swap_remove`
+/// must move the handle as well as the columns -- it did not, so `entities[row]`
+/// kept the departed entity's id and any walk by row index named the wrong one.
+#[test]
+def test_mid_list_swap_remove_moves_the_entity_handle : Bool :=
+    let a : Spawned := spawn empty_world [Pair.pair "pos" (Any.any 1u64)] in
+    let b : Spawned := spawn a.world [Pair.pair "pos" (Any.any 2u64)] in
+    let c : Spawned := spawn b.world [Pair.pair "pos" (Any.any 3u64)] in
+    // Remove the FIRST row: c's handle must end up at row 0.
+    let world : World := despawn c.world a.entity in
+    match entity_row world c.entity {
+        Option.none => false,
+        Option.some row =>
+            match entity_location world c.entity {
+                Option.none => false,
+                Option.some loc =>
+                    let l : Loc := loc in
+                    I64.beq row 0 && I64.beq l.row 0
+                        && U64.beq (entity_id (world_entity_at world l.archetype 0)) c.entity.id
+            }
+    }
