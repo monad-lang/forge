@@ -247,7 +247,9 @@ exact values), and a Maclaurin `f64_sin`/`f64_cos` after range reduction to
 `wasm32-unknown-wasip1` (wasi) both exist. `motes/web_wasm` provides the
 browser boundary: `Dom.*`, `Fetch.*`, `Worker.*`, `Clipboard.*`, `Clock`,
 `Storage`, `Console`, plus a `jsgen`-based loader generator. There is **no
-WebGL/WebGPU yet** — WebGL lands behind `forge-render` (Phase 8).
+WebGL/WebGPU yet** (no `canvas_get_context` or GL externs on any monad
+branch, audited 2026-11-13). WebGL lands as Phase 9a below: a wasm-only
+`forge-webgl` mote fed by a pure `app_frame`, not a `Renderer` enum arm.
 
 `MLIR`/GPU: monad's plan references an MLIR-based backend and a `Buf E`
 heap kind (`runtime/src/runtime_core.c`, `plans/bootstrapping/mlir-codegen.md`).
@@ -683,6 +685,42 @@ As built (29 tests: 7 `command`, 8 `backend`, 2 `soft`, 13 cross-module):
 **Later backends (no core change):** a `web_wasm` WebGL `Renderer` variant, and
 a GPU/MLIR one, exactly as the interface promises.
 
+### Phase 9a: WebGL backend (P6b) - **planned**
+
+The full plan, including the audit and the monad-side half (GL externs in
+`web_wasm`, `Canvas.get_context`, typed `ByteBuf` stores, `stub_gl.mjs`), is
+`plans-monad/implementations/web-webgl.md` (2026-11-13). The first consumer
+is the Multi millionær board game
+(`plans-monad/products/multi-millionaer-architecture.md`). Forge's part:
+
+1. **`app_frame` (web-webgl P3).** Factor the pure half out of `app_step`:
+   `app_frame (a) (world) : Pair World (List RenderCommand)`, which runs
+   propagate → `run_schedule_pure` → `extract`. `app_step` becomes
+   `app_frame` + `renderer_submit`/`renderer_present`, so existing tests
+   do not change.
+2. **`MeshData` + material table (P3)** in `forge-render`: positions/uvs/
+   indices, `pack` into `ByteBuf`s via `ByteBuf.set_f32_le`/`set_u16_le`,
+   code-built `quad`/`box`/`disc`/`cylinder`, `TextureDesc`, and
+   `MaterialHandle` → (shader kind, texture?, tint).
+3. **`motes/forge-webgl/` (new, P4).** A wasm-only mote (depends on
+   `forge-render`, `forge-math`, `web_wasm`), kept out of the native
+   `monad test -w`. `WebGlRenderer` holds handle registries, two shaders
+   (unlit-textured, flat-colour), and `submit`/`present`/`resize` over
+   `List RenderCommand`. **Why not a `Renderer` enum arm:** it would pull
+   web-only natives into `forge-render`, breaking native builds and tests.
+   **Why not a backend type class:** it would put constrained generics on
+   the per-frame path, where the compiled backend has had dictionary
+   miscompiles.
+4. **Parity test (P4).** One scene → `extract` → the soft recording and
+   `forge-webgl` under `stub_gl.mjs` must agree (same draw count, golden GL
+   stream).
+5. **Picking (P5)** in `forge-math`: `mat4_inverse`, `screen_to_ray`, and
+   `ray_plane_hit`/`ray_aabb_hit`/`ray_sphere_hit : Option F64`, with the
+   `Bool` forms rewritten on top.
+6. **Frame driver (P5).** oak `Subscription.animation_frame` → `app_frame` →
+   `WebGlRenderer.submit`. dt comes from successive rAF timestamps and feeds
+   `Time`. This replaces "a real clock source" from Phase 7, deviation 2.
+
 ## What is deferred
 
 - **Physics (P11)**: GJK/EPA with F64 — deferred (solver complexity).
@@ -693,8 +731,8 @@ a GPU/MLIR one, exactly as the interface promises.
   interface already carries `resize`, and `web_wasm` provides DOM events for
   the web path.
 - **Editor (P13)**: depends on UI — deferred.
-- **GPU/WebGL/MLIR backends**: interface is Phase 8; backends land when
-  monad's MLIR/GPU support and a `web_wasm` WebGL extern family exist.
+- **GPU/MLIR backends**: interface is Phase 8; they land when monad's
+  MLIR/GPU support exists. WebGL is no longer deferred; see Phase 9a.
 
 ## TDD approach
 
@@ -723,3 +761,4 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 6: forge-reactive (`Signal`/`Derived` over `Ref`, `EventStream` with a per-frame budget; 31 tests). All IO; both types travel as `Shared`.
 - [x] Phase 7: forge-app (`App` builder, `Plugin`, `app_step`/`app_run` IO loop, demo; 15 tests).
 - [x] Phase 8: forge-render (`RenderCommand` enum, `extract`, `Renderer` enum + soft/headless backends; 29 tests). The core knows no backend.
+- [ ] Phase 9a: WebGL backend (`app_frame`, `MeshData`, wasm-only `forge-webgl`, parity test, picking); plan in `plans-monad/implementations/web-webgl.md`
