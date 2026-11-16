@@ -1,7 +1,7 @@
 [mote]
-name = "forge-math"
+name = "forge_math"
 version = "0.1.0"
 edition = "2026"
 
-[dependencies.forge-core]
-path = "../forge-core"
+[dependencies.forge_core]
+workspace = true

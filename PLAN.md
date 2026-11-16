@@ -246,10 +246,40 @@ exact values), and a Maclaurin `f64_sin`/`f64_cos` after range reduction to
 `monad build --target wasm32-unknown-unknown` (web, JS imports) and
 `wasm32-unknown-wasip1` (wasi) both exist. `motes/web_wasm` provides the
 browser boundary: `Dom.*`, `Fetch.*`, `Worker.*`, `Clipboard.*`, `Clock`,
-`Storage`, `Console`, plus a `jsgen`-based loader generator. There is **no
-WebGL/WebGPU yet** (no `canvas_get_context` or GL externs on any monad
-branch, audited 2026-11-13). WebGL lands as Phase 9a below: a wasm-only
-`forge-webgl` mote fed by a pure `app_frame`, not a `Renderer` enum arm.
+`Storage`, `Console`, plus a `jsgen`-based loader generator.
+
+**Correction (2026-11-16): the "no WebGL yet" audit below is stale.**
+`web_wasm` at the pin `77ed9468` **does** ship the GL surface: `src/gl.mo`
+(`GlContext`/`GlShader`/`GlProgram`/`GlBuffer`/`GlTexture`/`GlUniform`/
+`GlImage`, the `Gl.*` calls, `GlOptions`) and `src/canvas.mo` (`Canvas.fit`,
+`client_size`, `buffer_size`, `pixel_ratio`), backed by
+`canvas_get_context_raw` in `src/ffi.mo`. Forge therefore consumes WebGL by
+declaring `web_wasm` as a **git dependency of `forge-app`** rather than
+adding a separate `forge-webgl` mote. `motes/forge-app/src/main.mo` is a
+`targets = ["web"]` bin holding the workspace's only `web_wasm` use, so
+`monad test` drops it from the native sweep
+(`Mote.native_test_roots`/`Mote.web_only_bin_file`) while `monad check`
+still type-checks it (40 files, 0 errors).
+
+Two toolchain facts this work measured rather than assumed:
+
+- **The lock lives beside the DECLARING manifest.** `forge-app` declares
+  `web_wasm` directly (not `workspace = true`), so its lock is
+  `motes/forge-app/mote.lock` and `monad fetch motes/forge-app` writes it
+  there. A root-only lock is NOT enough: `Build.verify_home` reads
+  `m.dir/mote.lock` (`build/src/fetch.mo`), so member-scoped commands and
+  `monad check -w` fail with "not in mote.lock" while the lock sits one
+  level up. (Measured against the installed `monad 7a9b25f`, which also
+  fails `scripts/check-external-mote.sh` config 10 for the same reason.)
+- **A nested struct literal infers no field types.** `Result.ok { ... }`
+  inside a `match` arm inside a `do` block never reaches the checker with an
+  expected type, so the fields become bare type variables and the affine
+  gate fires ("`ctx` : A is used 3 times but is affine") *before* the
+  `Copy GlContext` instance can be selected. The fix is a named constructor
+  def (`scene_new`), not a `Shared` wrapper.
+
+WebGL still lands as Phase 9a below: a `web_wasm`-fed pure `app_frame`, not
+a `Renderer` enum arm.
 
 `MLIR`/GPU: monad's plan references an MLIR-based backend and a `Buf E`
 heap kind (`runtime/src/runtime_core.c`, `plans/bootstrapping/mlir-codegen.md`).

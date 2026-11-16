@@ -1,20 +1,34 @@
 [mote]
-name = "forge-app"
+name = "forge_app"
 version = "0.1.0"
 edition = "2026"
 
+# The web profile is opt-in. `src/main.mo` reaches `web_wasm` externs that
+# exist only on the browser target, so this mote does not admit `native` and
+# `monad test` drops the bin from its sweep (`Mote.native_test_roots`). The
+# FILE is dropped too (`Mote.web_only_bin_file`), which is the half that
+# matters here: the bin shares `src/` with the natively-tested library.
+targets = ["web"]
+
+[[bin]]
+name = "forge-app-web"
+path = "src/main.mo"
+
 # Keys are `use`-spelled, so `_` not `-` (directories keep their hyphens).
 [dependencies.forge_core]
-path = "../forge-core"
+workspace = true
 
 [dependencies.forge_math]
-path = "../forge-math"
+workspace = true
 
 [dependencies.forge_schedule]
-path = "../forge-schedule"
+workspace = true
 
 [dependencies.forge_scene]
-path = "../forge-scene"
+workspace = true
 
 [dependencies.forge_render]
-path = "../forge-render"
+workspace = true
+
+[dependencies.web_wasm]
+workspace = true

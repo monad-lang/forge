@@ -1,12 +1,12 @@
 [mote]
-name = "forge-scene"
+name = "forge_scene"
 version = "0.1.0"
 edition = "2026"
 
 # The dependency KEY is what `use` spells, and a hyphen is not an identifier,
 # so these are keyed with `_` while the directories keep their hyphenated names.
 [dependencies.forge_core]
-path = "../forge-core"
+workspace = true
 
 [dependencies.forge_math]
-path = "../forge-math"
+workspace = true

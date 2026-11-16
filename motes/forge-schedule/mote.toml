@@ -1,7 +1,7 @@
 [mote]
-name = "forge-schedule"
+name = "forge_schedule"
 version = "0.1.0"
 edition = "2026"
 
 [dependencies.forge_core]
-path = "../forge-core"
+workspace = true

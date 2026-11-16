@@ -1,4 +1,9 @@
+# Build output. `/target` is the workspace root's store; a MEMBER-scoped
+# command (`monad check motes/forge-app`, or the wasm build of a bin) writes
+# a store beside that member instead, so the nested spelling is ignored too
+# -- otherwise a member build leaves an untracked `motes/*/target/`.
 /target
+/motes/*/target
 history.txt
 
 # Devenv

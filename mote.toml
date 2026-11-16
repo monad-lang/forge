@@ -2,3 +2,42 @@
 members = [
   "motes/*",
 ]
+
+[workspace.dependencies.forge_app]
+path = "motes/forge-app"
+
+[workspace.dependencies.forge_core]
+path = "motes/forge-core"
+
+[workspace.dependencies.forge_render]
+path = "motes/forge-render"
+
+[workspace.dependencies.forge_scene]
+path = "motes/forge-scene"
+
+[workspace.dependencies.forge_schedule]
+path = "motes/forge-schedule"
+
+[workspace.dependencies.forge_math]
+path = "motes/forge-math"
+
+[workspace.dependencies.forge_reactive]
+path = "motes/forge-reactive"
+
+# The browser platform boundary (DOM, events, fetch, WebGL). It is a git
+# dependency because it lives in the monad repository, not this one, and is
+# not part of the installed toolchain's unpacked `init`/`std`/`runtime`.
+#
+# `rev` pins a commit, not a moving branch, so the same checkout is used
+# until this line changes; `monad fetch` records it in `mote.lock`. `subdir`
+# names the mote inside a repository that holds many.
+#
+# NOTE: `web_wasm`'s own manifest inherits `init`/`std` from the monad
+# workspace root ABOVE it in the checkout, so those resolve to the
+# checkout's copies. That is why the web code below lives behind a
+# `targets = ["web"]` bin: nothing on the native path reaches this
+# dependency, and a native `monad check`/`test` never sees a second `init`.
+[workspace.dependencies.web_wasm]
+git = "https://github.com/monad-lang/monad.git"
+rev = "77ed946875f6804b025bb73035d367a2074a00e2"
+subdir = "motes/web_wasm"
