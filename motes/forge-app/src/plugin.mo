@@ -10,7 +10,7 @@
 use std::derive {derive_debug}
 use std::list {}
 use init::copy {Copy}
-use lib::schedule {Schedule}
+use forge_schedule {Schedule}
 
 /// A named setup action, run once before the loop starts.
 #[derive Debug]

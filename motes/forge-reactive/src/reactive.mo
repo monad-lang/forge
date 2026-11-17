@@ -21,8 +21,12 @@
 // time -- engine-scale machinery. `Derived A` is the cheap, honest alternative:
 // it holds a thunk that READS its sources when the value is demanded, so it is
 // always current by construction and never needs invalidation. It recomputes
-// on every read; a memoizing cache (a `Ref` of the last value + the version it
-// was computed at) is the obvious next step and is left as a TODO.
+// on every read.
+//
+// `Memo B` is the caching form, for a computation worth not repeating: it
+// keeps the last value and the source VERSION it was computed at, and a read
+// recomputes only when the source's version has moved. It needs its cache
+// cells, so building one is `IO` (`signal_memo`), unlike `signal_map`.
 
 use std::derive {derive_copy, derive_clone, derive_debug}
 use std::ref {Ref, Ref.new, Ref.get, Ref.set, Ref.update}
@@ -151,6 +155,68 @@ pub def signal_fold (f : B -> A -> B) (init : B) (sh : Shared (Signal A)) : Shar
         let v <- signal_get sh;
         return (f init v)
     }))
+
+// ── Memo ────────────────────────────────────────────────────────────
+
+/// A cached view over ONE signal: the value, plus a count of how many times
+/// it has actually been computed (what a test, or a profiler, wants to see).
+pub type Memo (B : Type) {
+    mk (view : Shared (Derived B), computes : Ref I64)
+}
+
+/// Recompute from the source and remember the version it was read at.
+def memo_refresh
+    (sf : Shared (A -> B)) (sh : Shared (Signal A))
+    (cache : Ref B) (seen : Ref U64) (computes : Ref I64) (now : U64)
+    : IO B := do {
+    let v <- signal_get sh;
+    let b <- Ref.update cache (fn (_ : B) => (Shared.get sf) v);
+    Ref.set seen now;
+    let _ <- Ref.update computes (fn (n : I64) => I64.add n 1);
+    return b
+}
+
+/// The cached value when the source has not been written since; otherwise a
+/// refresh.
+def memo_read
+    (sf : Shared (A -> B)) (sh : Shared (Signal A))
+    (cache : Ref B) (seen : Ref U64) (computes : Ref I64)
+    : IO B := do {
+    let now <- signal_version sh;
+    let last <- Ref.get seen;
+    if U64.beq now last
+    then Ref.get cache
+    else memo_refresh sf sh cache seen computes now
+}
+
+/// `signal_map` with a cache: `f` runs once now, and again only after the
+/// signal is written. Reads in between return the remembered value.
+pub def signal_memo (f : A -> B) (sh : Shared (Signal A)) : IO (Shared (Memo B)) := do {
+    let sf : Shared (A -> B) := Shared.of f;
+    let v <- signal_get sh;
+    let at <- signal_version sh;
+    let cache <- Ref.new ((Shared.get sf) v);
+    let seen <- Ref.new at;
+    let computes <- Ref.new 1;
+    let view : Shared (Derived B) :=
+        Shared.of (Derived.mk (fn (_ : Unit) => memo_read sf sh cache seen computes));
+    return (Shared.of (Memo.mk view computes))
+}
+
+/// The memoized value.
+pub def memo_get (m : Shared (Memo B)) : IO B :=
+    match Shared.get m { Memo.mk view _ => derived_get view }
+
+/// How many times the function has run (1 right after `signal_memo`).
+pub def memo_computes (m : Shared (Memo B)) : IO I64 :=
+    match Shared.get m { Memo.mk _ computes => Ref.get computes }
+
+/// The memo as an ordinary `Derived`, to compose with `derived_map`.
+///
+/// It wraps the memo rather than handing out its inner view: a field read
+/// through `Shared.get` is a borrow and cannot be returned.
+pub def memo_derived (m : Shared (Memo B)) : Shared (Derived B) :=
+    Shared.of (Derived.mk (fn (_ : Unit) => memo_get m))
 
 // ── Tests ───────────────────────────────────────────────────────────
 
@@ -282,4 +348,47 @@ def test_signal_values_lists : IO Bool := do {
     let va <- signal_get a;
     let vb <- signal_get b;
     return (String.beq va "x" && String.beq vb "z")
+}
+
+#[test]
+def test_memo_computes_once_at_creation : IO Bool := do {
+    let s <- signal_new 3;
+    let m <- signal_memo (fn (x : I64) => I64.mul x 2) s;
+    let v <- memo_get m;
+    let n <- memo_computes m;
+    return (I64.beq v 6 && I64.beq n 1)
+}
+
+#[test]
+def test_memo_does_not_recompute_between_writes : IO Bool := do {
+    let s <- signal_new 3;
+    let m <- signal_memo (fn (x : I64) => I64.mul x 2) s;
+    let _ <- memo_get m;
+    let _ <- memo_get m;
+    let _ <- memo_get m;
+    let n <- memo_computes m;
+    return (I64.beq n 1)
+}
+
+#[test]
+def test_memo_recomputes_once_per_source_version : IO Bool := do {
+    let s <- signal_new 3;
+    let m <- signal_memo (fn (x : I64) => I64.mul x 2) s;
+    signal_set s 10;
+    let a <- memo_get m;
+    let b <- memo_get m;
+    signal_set s 11;
+    let c <- memo_get m;
+    let n <- memo_computes m;
+    // creation + one per write that was followed by a read
+    return (I64.beq a 20 && I64.beq b 20 && I64.beq c 22 && I64.beq n 3)
+}
+
+#[test]
+def test_memo_composes_as_a_derived : IO Bool := do {
+    let s <- signal_new 4;
+    let m <- signal_memo (fn (x : I64) => I64.add x 1) s;
+    let d : Shared (Derived I64) := derived_map (fn (x : I64) => I64.mul x 10) (memo_derived m);
+    let v <- derived_get d;
+    return (I64.beq v 50)
 }

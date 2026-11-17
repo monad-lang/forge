@@ -9,7 +9,8 @@ pub use lib::reactive {
     Signal, signal_new, signal_get, signal_version, signal_set, signal_update,
     Derived, Derived2, Derived3,
     derived_get, derived2_get, derived3_get,
-    signal_map, derived_map, signal_zip2, signal_zip3, signal_fold
+    signal_map, derived_map, signal_zip2, signal_zip3, signal_fold,
+    Memo, signal_memo, memo_get, memo_computes, memo_derived
 }
 pub use lib::event {
     EventStream, event_stream_new,

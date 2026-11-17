@@ -3,11 +3,12 @@ name = "forge_app"
 version = "0.1.0"
 edition = "2026"
 
-# The web profile is opt-in. `src/main.mo` reaches `web_wasm` externs that
-# exist only on the browser target, so this mote does not admit `native` and
-# `monad test` drops the bin from its sweep (`Mote.native_test_roots`). The
-# FILE is dropped too (`Mote.web_only_bin_file`), which is the half that
-# matters here: the bin shares `src/` with the natively-tested library.
+# The web profile is opt-in. `src/main.mo` (the demo bin) and `src/web.mo`
+# (the browser host) reach `web_wasm` externs that exist only on the browser
+# target, so this mote does not admit `native` and `monad test` drops the
+# bin from its sweep (`Mote.native_test_roots`, `Mote.web_only_bin_file`).
+# `web.mo` has no `#[test]` defs and `lib.mo` does not re-export it, so no
+# native test binary reaches it either.
 targets = ["web"]
 
 [[bin]]
@@ -28,6 +29,9 @@ workspace = true
 workspace = true
 
 [dependencies.forge_render]
+workspace = true
+
+[dependencies.forge_webgl]
 workspace = true
 
 [dependencies.web_wasm]

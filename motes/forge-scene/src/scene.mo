@@ -9,12 +9,14 @@
 // The propagation pass is a pure `World -> World` function (the shape a
 // forge-schedule system runs), so it is testable with no IO.
 //
-// TODO: the children scan is O(n^2) in transformed entities. A
-// `HashMap U64 (List U64)` children index, threaded through the recursion,
-// would make it linear; correctness is what this phase is for.
+// Propagation is linear in the number of transformed entities: one pass
+// builds a parent-id -> children index (`ChildIndex`), and the top-down walk
+// reads a node's children from it instead of rescanning every entity per
+// node. (`children_of` is still the public, index-free O(n) scan.)
 
 use std::derive {derive_copy, derive_clone, derive_debug}
 use std::list {List.filter}
+use std::map {HashMap, Map}
 use init::copy {Copy}
 use init::clone {Clone}
 use forge_core::ecs {
@@ -172,7 +174,7 @@ pub def children_of (world : World) (parent_e : Entity) : List Entity :=
 // `parent_global * local`. Starting at the roots means a parent is always
 // written before its children are read.
 //
-// `#[terminating]` is load-bearing: the recursion descends into a FILTERED
+// `#[terminating]` is load-bearing: the recursion descends into an INDEXED
 // child list, not a structural subterm, so the checker cannot see the
 // decrease. (A cyclic parent graph would therefore loop; component chains are
 // assumed acyclic, as in every ECS.)
@@ -188,27 +190,74 @@ def global_for (world : World) (e : Entity) (local : Transform) : Mat4 :=
             }
     }
 
+/// The hierarchy, read once: the parentless entities and, per parent id, its
+/// children. `Copy` is the hand-written identity (an immutable list and map).
+struct ChildIndex {
+    roots : List Entity,
+    children : HashMap U64 (List Entity)
+}
+
+instance Copy ChildIndex {
+    def copy (x : ChildIndex) : Pair ChildIndex ChildIndex := Pair.pair x x
+}
+
+def index_empty : ChildIndex := { roots := [], children := Map.empty : ChildIndex }
+
+def index_children (ix : ChildIndex) (parent_id : U64) : List Entity :=
+    match Map.lookup parent_id ix.children {
+        Option.some es => es,
+        Option.none => []
+    }
+
+def index_add_root (ix : ChildIndex) (e : Entity) : ChildIndex :=
+    { ix with roots := List.cons e ix.roots }
+
+def index_add_child (ix : ChildIndex) (parent_id : U64) (e : Entity) : ChildIndex :=
+    { ix with children := Map.insert parent_id (List.cons e (index_children ix parent_id)) ix.children }
+
+def index_step (world : World) (ix : ChildIndex) (e : Entity) : ChildIndex :=
+    match entity_parent world e {
+        Option.none => index_add_root ix e,
+        Option.some pe => index_add_child ix pe.id e
+    }
+
 #[terminating]
-def prop_one (world : World) (e : Entity) : World :=
+def index_go (world : World) (es : List Entity) (ix : ChildIndex) : ChildIndex :=
+    match es {
+        List.empty => ix,
+        List.cons e rest => index_go world rest (index_step world ix e)
+    }
+
+/// One pass over the transformed entities. Roots come back in query order;
+/// a parent's children are in reverse query order, which propagation does
+/// not care about (siblings are independent).
+def child_index (world : World) : ChildIndex :=
+    let ix : ChildIndex := index_go world (all_transformed world) index_empty in
+    { ix with roots := List.reverse ix.roots }
+
+#[terminating]
+def prop_one (world : World) (ix : ChildIndex) (e : Entity) : World :=
     match entity_transform world e {
         Option.none => world,
         Option.some local =>
             let g : Mat4 := global_for world e local in
             let world1 : World :=
                 insert_component world e global_transform_name (Any.any (global_transform g)) in
-            prop_forest world1 (children_of world1 e)
+            prop_forest world1 ix (index_children ix e.id)
     }
 
 #[terminating]
-def prop_forest (world : World) (es : List Entity) : World :=
+def prop_forest (world : World) (ix : ChildIndex) (es : List Entity) : World :=
     match es {
         List.empty => world,
-        List.cons e rest => prop_forest (prop_one world e) rest
+        List.cons e rest => prop_forest (prop_one world ix e) ix rest
     }
 
-/// Recompute every `GlobalTransform`, top-down from the roots.
+/// Recompute every `GlobalTransform`, top-down from the roots. The hierarchy
+/// is indexed once, so the pass is linear in the transformed entities.
 pub def propagate_transforms (world : World) : World :=
-    prop_forest world (transform_roots world)
+    let ix : ChildIndex := child_index world in
+    prop_forest world ix ix.roots
 
 /// Convenience: an entity's world-space translation (the global matrix's
 /// translation column), if it has a global.

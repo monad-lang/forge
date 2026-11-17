@@ -1,0 +1,21 @@
+[mote]
+name = "forge_webgl"
+version = "0.1.0"
+edition = "2026"
+
+# Web-only: every module here reaches `web_wasm` GL externs, which exist
+# only on the browser target. The mote has no `#[test]` defs (a native test
+# binary could not link them), so `monad test -w` skips its files; its
+# coverage is the stub-GL smoke (`scripts/web-smoke.sh`) and the pure
+# `frame_plan` it executes, which IS natively tested in forge-render.
+targets = ["web"]
+
+# Keys are `use`-spelled, so `_` not `-` (directories keep their hyphens).
+[dependencies.forge_math]
+workspace = true
+
+[dependencies.forge_render]
+workspace = true
+
+[dependencies.web_wasm]
+workspace = true

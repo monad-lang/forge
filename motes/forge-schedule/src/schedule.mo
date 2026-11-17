@@ -12,14 +12,16 @@ use std::derive {derive_copy, derive_clone, derive_debug}
 use init::copy {Copy}
 use init::clone {Clone}
 use forge_core::ecs {
-    World, Spawned, spawn, empty_world, world_entity_count, world_clock
+    World, Spawned, Entity, spawn, empty_world, world_entity_count, world_clock,
+    get_component_named, insert_component
 }
+use forge_core::query {query_entities}
 use forge_core::commands {CommandBuffer, empty_buffer, flush}
 use forge_core::world_m {WorldM, PureWorld, PureWorld.run}
 use init::id {Id}
 use lib::system {
     ScheduleState, start_s, update_s, fixed_update_s, render_s, cleanup_s,
-    all_stages, System, system_new, system_run, system_in_stage,
+    all_stages, stage_ordinal, System, system_new, system_run, system_in_stage,
     Clock, clock_advance, system_noop, batches
 }
 
@@ -131,6 +133,25 @@ def run_fixed_go (world : World) (sch : Schedule) (n : I64) : World :=
 pub def run_fixed_steps (world : World) (sch : Schedule) (n : I64) : World :=
     run_fixed_go world sch n
 
+/// Like `run_stages_go`, but the fixed stage runs `fixed_steps` times (0 is
+/// "not this frame") instead of exactly once.
+#[terminating]
+def run_timed_go (world : World) (sch : Schedule) (stages : List ScheduleState) (fixed_steps : I64)
+    : World :=
+    match stages {
+        List.empty => world,
+        List.cons st rest =>
+            if I64.beq (stage_ordinal st) (stage_ordinal fixed_update_s)
+            then run_timed_go (run_fixed_go world sch fixed_steps) sch rest fixed_steps
+            else run_timed_go (run_stage world sch st) sch rest fixed_steps
+    }
+
+/// The whole schedule once under a real clock: every stage runs once, except
+/// `fixed_update_s`, which runs `fixed_steps` times -- the count
+/// `time_advance` computed for this frame's `dt`.
+pub def run_schedule_timed (world : World) (sch : Schedule) (fixed_steps : I64) : World :=
+    run_timed_go world sch all_stages fixed_steps
+
 // ── Time ────────────────────────────────────────────────────────────
 
 /// The frame clock resource: elapsed wall time, the last delta, the fixed step,
@@ -168,6 +189,71 @@ pub def time_delta (t : Time) : F64 := t.delta
 pub def time_fixed_steps (t : Time) : I64 := t.fixed_steps
 
 pub def time_accumulator (t : Time) : F64 := t.accumulator
+
+pub def time_fixed_delta (t : Time) : F64 := t.fixed_delta
+
+// ── Time as a world resource ────────────────────────────────────────
+//
+// A system is a `WorldM` computation and sees only the `World`, so the frame
+// clock has to live IN the world for a system to read `dt`. forge-core has no
+// separate resource table; a resource is a component on a singleton entity,
+// found by its component name.
+
+pub def time_name : String := "forge.time"
+
+/// The default fixed step: 60 Hz.
+pub def default_fixed_delta : F64 := 1.0 / 60.0
+
+def as_time (v : Any) : Time :=
+    match v { Any.any x => let t : Time := x in t }
+
+def time_of (world : World) (holder : Option Entity) : Option Time :=
+    match holder {
+        Option.none => Option.none,
+        Option.some e =>
+            match get_component_named world e time_name {
+                Option.some v => Option.some (as_time v),
+                Option.none => Option.none
+            }
+    }
+
+/// The world's clock, if one has been installed.
+pub def world_time_opt (world : World) : Option Time :=
+    time_of world (List.first (query_entities world [time_name] []))
+
+/// The world's clock (a fresh 60 Hz clock when none is installed).
+pub def world_time (world : World) : Time :=
+    match world_time_opt world {
+        Option.some t => t,
+        Option.none => time_new default_fixed_delta
+    }
+
+def spawn_time (world : World) (t : Time) : World :=
+    let s : Spawned := spawn world [Pair.pair time_name (Any.any t)] in
+    s.world
+
+/// Install or replace the world's clock.
+pub def world_set_time (world : World) (t : Time) : World :=
+    match List.first (query_entities world [time_name] []) {
+        Option.some e => insert_component world e time_name (Any.any t),
+        Option.none => spawn_time world t
+    }
+
+/// Advance the world's clock by `dt` seconds, installing one (with
+/// `fixed_delta`) on first use.
+pub def world_advance_time (world : World) (fixed_delta : F64) (dt : F64) : World :=
+    let t : Time :=
+        match world_time_opt world {
+            Option.some t0 => t0,
+            Option.none => time_new fixed_delta
+        } in
+    world_set_time world (time_advance t dt)
+
+/// One frame under a real clock: advance the world's clock by `dt`, then run
+/// the schedule with the fixed stage repeated as that advance dictates.
+pub def run_frame (world : World) (sch : Schedule) (fixed_delta : F64) (dt : F64) : World :=
+    let ticked : World := world_advance_time world fixed_delta dt in
+    run_schedule_timed ticked sch (time_fixed_steps (world_time ticked))
 
 #[test]
 def test_empty_schedule_runs_nothing : Bool :=
@@ -239,3 +325,38 @@ def test_time_elapsed_grows : Bool :=
     let t1 : Time := time_advance (time_new 0.1) 0.25 in
     let t2 : Time := time_advance t1 0.25 in
     time_elapsed t2 > 0.4999 && time_elapsed t2 < 0.5001
+
+#[test]
+def test_timed_run_repeats_only_the_fixed_stage : Bool :=
+    let sch : Schedule :=
+        add_system (add_system empty_schedule (system_new "fixed" fixed_update_s [] [] spawn_one))
+                   (system_new "update" update_s [] [] spawn_one) in
+    // 3 fixed steps + 1 update.
+    I64.beq (world_entity_count (run_schedule_timed empty_world sch 3)) 4
+
+#[test]
+def test_timed_run_with_no_steps_skips_the_fixed_stage : Bool :=
+    let sch : Schedule :=
+        add_system empty_schedule (system_new "fixed" fixed_update_s [] [] spawn_one) in
+    I64.beq (world_entity_count (run_schedule_timed empty_world sch 0)) 0
+
+#[test]
+def test_a_world_without_a_clock_reports_a_fresh_one : Bool :=
+    F64.beq (time_elapsed (world_time empty_world)) 0.0
+        && (match world_time_opt empty_world { Option.some _ => false, Option.none => true })
+
+#[test]
+def test_world_time_is_a_singleton : Bool :=
+    let w1 : World := world_advance_time empty_world 0.1 0.05 in
+    let w2 : World := world_advance_time w1 0.1 0.05 in
+    // Still one entity: the second advance reuses the holder.
+    I64.beq (world_entity_count w2) 1
+        && time_elapsed (world_time w2) > 0.0999 && time_elapsed (world_time w2) < 0.1001
+
+#[test]
+def test_run_frame_steps_the_fixed_stage_by_the_clock : Bool :=
+    let sch : Schedule :=
+        add_system empty_schedule (system_new "fixed" fixed_update_s [] [] spawn_one) in
+    // dt = 0.25 at a 0.1 step: 2 fixed steps, plus the clock's own entity.
+    let w : World := run_frame empty_world sch 0.1 0.25 in
+    I64.beq (world_entity_count w) 3 && I64.beq (time_fixed_steps (world_time w)) 2

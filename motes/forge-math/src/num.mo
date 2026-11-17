@@ -98,6 +98,18 @@ pub def f64_cos (x : F64) : F64 := f64_sin (x + f64_half_pi)
 /// `1/x` (a named spelling, so formulas read as reciprocals).
 pub def f64_recip (x : F64) : F64 := 1.0 / x
 
+/// `I64 -> F64` by binary expansion. The toolchain has NO integer<->float
+/// conversion native, so this builds the float from its bits' place values
+/// (exact for every `|n| < 2^53`). O(log n).
+#[terminating]
+pub def f64_of_i64 (n : I64) : F64 :=
+    if I64.lt n 0 then 0.0 - f64_of_i64 (I64.sub 0 n)
+    else if I64.beq n 0 then 0.0
+    else
+        let half : F64 := f64_of_i64 (I64.div n 2) in
+        let bit : F64 := if I64.beq (I64.rem n 2) 1 then 1.0 else 0.0 in
+        2.0 * half + bit
+
 #[test]
 def test_f64_abs_neg : Bool := f64_approx (f64_abs (0.0 - 3.5)) 3.5
 
@@ -136,3 +148,8 @@ def test_f64_sin_reduces_large : Bool :=
 #[test]
 def test_f64_min_max_clamp : Bool :=
     f64_approx (f64_clamp 0.0 1.0 5.0) 1.0
+
+#[test]
+def test_f64_of_i64 : Bool :=
+    F64.beq (f64_of_i64 0) 0.0 && F64.beq (f64_of_i64 1) 1.0 && F64.beq (f64_of_i64 37) 37.0
+        && F64.beq (f64_of_i64 1024) 1024.0 && F64.beq (f64_of_i64 (I64.sub 0 6)) (0.0 - 6.0)

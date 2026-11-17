@@ -248,38 +248,26 @@ exact values), and a Maclaurin `f64_sin`/`f64_cos` after range reduction to
 browser boundary: `Dom.*`, `Fetch.*`, `Worker.*`, `Clipboard.*`, `Clock`,
 `Storage`, `Console`, plus a `jsgen`-based loader generator.
 
-**Correction (2026-11-16): the "no WebGL yet" audit below is stale.**
-`web_wasm` at the pin `77ed9468` **does** ship the GL surface: `src/gl.mo`
-(`GlContext`/`GlShader`/`GlProgram`/`GlBuffer`/`GlTexture`/`GlUniform`/
-`GlImage`, the `Gl.*` calls, `GlOptions`) and `src/canvas.mo` (`Canvas.fit`,
-`client_size`, `buffer_size`, `pixel_ratio`), backed by
-`canvas_get_context_raw` in `src/ffi.mo`. Forge therefore consumes WebGL by
-declaring `web_wasm` as a **git dependency of `forge-app`** rather than
-adding a separate `forge-webgl` mote. `motes/forge-app/src/main.mo` is a
-`targets = ["web"]` bin holding the workspace's only `web_wasm` use, so
-`monad test` drops it from the native sweep
-(`Mote.native_test_roots`/`Mote.web_only_bin_file`) while `monad check`
-still type-checks it (40 files, 0 errors).
+**WebGL (2026-11-17): landed as Phase 9a.** `web_wasm` at the pin
+`77ed9468` ships the GL surface (`src/gl.mo`, `src/canvas.mo`, uploads over
+`std::buf`). Forge consumes it from ONE web-only mote, `motes/forge-webgl`
+(the renderer), and ONE web-only module, `forge_app::web` (the frame
+driver); a game depends on `forge_app` alone. The 2026-11-16 note that put
+everything in a forge-app bin is superseded: the bin is now only the demo.
 
-Two toolchain facts this work measured rather than assumed:
+Toolchain facts measured on the way (the rest are in "Gaps in monad and
+its motes" below):
 
-- **The lock lives beside the DECLARING manifest.** `forge-app` declares
-  `web_wasm` directly (not `workspace = true`), so its lock is
-  `motes/forge-app/mote.lock` and `monad fetch motes/forge-app` writes it
-  there. A root-only lock is NOT enough: `Build.verify_home` reads
-  `m.dir/mote.lock` (`build/src/fetch.mo`), so member-scoped commands and
-  `monad check -w` fail with "not in mote.lock" while the lock sits one
-  level up. (Measured against the installed `monad 7a9b25f`, which also
-  fails `scripts/check-external-mote.sh` config 10 for the same reason.)
+- **Member-scoped commands cannot see a workspace git dependency.**
+  `web_wasm` is a `[workspace.dependencies]` entry and the lock is the
+  root's `mote.lock`, but `monad check motes/forge-webgl` (or
+  `monad test motes/forge-app`) fails with "not in mote.lock":
+  `Build.verify_home` reads the MEMBER's directory. Run `-w` from the root.
 - **A nested struct literal infers no field types.** `Result.ok { ... }`
   inside a `match` arm inside a `do` block never reaches the checker with an
   expected type, so the fields become bare type variables and the affine
-  gate fires ("`ctx` : A is used 3 times but is affine") *before* the
-  `Copy GlContext` instance can be selected. The fix is a named constructor
-  def (`scene_new`), not a `Shared` wrapper.
-
-WebGL still lands as Phase 9a below: a `web_wasm`-fed pure `app_frame`, not
-a `Renderer` enum arm.
+  gate fires before a `Copy` instance can be selected. Use a named
+  constructor def. The `<-` form has the same problem (gap G3).
 
 `MLIR`/GPU: monad's plan references an MLIR-based backend and a `Buf E`
 heap kind (`runtime/src/runtime_core.c`, `plans/bootstrapping/mlir-codegen.md`).
@@ -344,14 +332,28 @@ forge/
     │       ├── extract.mo        # World -> List RenderCommand
     │       ├── backend.mo        # Renderer interface
     │       ├── soft.mo           # headless/soft backend (records commands)
+    │       ├── mesh.mo           # MeshData + quad/box/disc/cylinder
+    │       ├── material.mo       # Material, TextureDesc, Assets tables
+    │       ├── plan.mo           # frame_plan: commands + assets -> FramePlan
+    │       ├── pick.mo           # pick_entity
     │       └── tests/render_tests.mo
+    ├── forge-webgl/              # WebGL executor of a FramePlan (web-only)
+    │   ├── mote.toml             # targets = ["web"]
+    │   └── src/
+    │       ├── lib.mo
+    │       ├── shaders.mo        # GLSL ES 1.00 flat + textured
+    │       └── renderer.mo       # WebGlRenderer: programs, uploads, submit
     └── forge-app/                # App builder, plugins, IO main loop
-        ├── mote.toml
+        ├── mote.toml             # targets = ["web"]; bin forge-app-web
         └── src/
             ├── lib.mo
-            ├── app.mo
+            ├── app.mo            # App, app_frame / app_frame_dt, CameraRig
             ├── plugin.mo
+            ├── web.mo            # forge_app::web: browser frame driver (web-only)
+            ├── main.mo           # demo bin
             └── tests/app_tests.mo
+scripts/web-smoke.sh               # wasm build + stub-GL smoke
+tests/web/forge_webgl_smoke.mjs
 ```
 
 Each mote depends on `forge-core` (and its own extra deps) via `path`.
@@ -375,6 +377,13 @@ forge-reactive 31 (14 `reactive`, 11 `event`, 6 cross-module); forge-render 29
 (7 `command`, 8 `backend`, 2 `soft` (re-exported), 13 cross-module);
 forge-app 15 (8 `app`, 2 `plugin`, 5 cross-module). `ecs.mo` alone also reports `ok` under a plain
 `monad check` outside the shell.
+
+**Re-verified 2026-11-17** (`monad 7a9b25f`, after Phase 9a): `monad check
+-w` 48 files, 0 errors (forge-webgl and `forge_app::web` included);
+`monad test -w` **312/312** — forge-core 47, forge-math 91, forge-schedule
+42, forge-scene 15, forge-reactive 35, forge-render 60, forge-app 22.
+`scripts/web-smoke.sh`: the demo builds for `wasm32-unknown-unknown` and
+passes the stub-GL smoke in webgl2, webgl1 and no-WebGL modes.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
 one (`monad check`) was a type error; the other three type-checked and only
@@ -486,8 +495,13 @@ pub type WorldM (M : Type -> Type) (A : Type) { mk (un : StateT World M A) }
 4. `type PureWorld A { mk (run : WorldM Id A) }` and
    `PureWorld.run (m : WorldM Id A) (w : World) : Pair World A`. (`run` takes
    a `WorldM Id A`, not a `PureWorld A`.)
-5. `AppWorld` / `FallibleWorld` (`WorldM IO` / `WorldM (ResultT String IO)`)
-   are **deferred** to Phase 4/7, where a system actually needs them.
+5. `AppWorld` (`WorldM IO`, run with `AppWorld.run`) and `FallibleWorld`
+   (2026-11-17, both executed by `world_m_tests.mo`). **`FallibleWorld` is
+   NOT `WorldM (ResultT String IO)`**: that stack type-checks but
+   `Monad.pure` through a transformer over a transformer is miscompiled
+   (gap G1), so `FallibleWorld A` is its own monad over
+   `World -> IO (Result String (Pair World A))`, with `lift` from
+   `WorldM IO`, `fail`, `of_result`, `get`, `modify`.
 
 **Verified end-to-end:** `motes/forge-core/src/tests/world_m_tests.mo`
 executes every stack path (6 tests): `bind` reading the world, `.run_state`
@@ -586,9 +600,10 @@ mote needs from a `World` goes through forge-core's public API
 a hazard here.
 
 **`Children` is not stored** (the plan listed it). Children are found by
-reading every entity's `Parent`, which keeps one source of truth; the children
-scan is O(n^2) in transformed entities (a TODO in the module header -- a
-`HashMap U64 (List U64)` index would make it linear).
+reading every entity's `Parent`, which keeps one source of truth.
+`propagate_transforms` builds a `parent id -> children` index in ONE pass
+first (2026-11-17), so propagation is linear; the old per-node scan was
+O(n^2).
 
 **`#[terminating]` on the propagation recursion is load-bearing:** it descends
 into a FILTERED child list, not a structural subterm, so the checker cannot
@@ -632,8 +647,9 @@ non-`Copy` environment.
 
 1. **`Derived` recomputes on read** instead of a subscription graph. A real
    graph needs mutable listener lists and set-time callbacks; a thunk that
-   reads its sources is always current and needs no invalidation. A memoizing
-   cache (last value + the version it was computed at) is the TODO.
+   reads its sources is always current and needs no invalidation. `Memo`
+   (`signal_memo`, 2026-11-17) is the cached form: last value + the source
+   version it was computed at, recomputed only after a write.
 2. **`EventStream` is one queue, not `EventWriter`/`EventReader` handles.**
    `event_drain` returns the batch under the budget; a per-reader cursor would
    be the next step if two consumers ever need independent views.
@@ -668,9 +684,12 @@ exactly what makes the loop testable.
 
 1. **`app_run` returns the final `World`**, not `IO Unit`. A caller that does
    not want it ignores it, and every frame's effect stays observable in a test.
-2. **No fixed-timestep accumulator in the loop yet.** forge-schedule's `Time`
-   models it and is tested; wiring it in needs a real clock source (and so real
-   IO), which this mote does not yet have. `app_run` runs a fixed frame count.
+2. **The fixed-timestep accumulator is wired in (2026-11-17), as
+   `app_frame_dt`.** The clock is a `Time` resource IN the world (a singleton
+   entity, `world_time`), advanced by `dt` each frame, and
+   `run_schedule_timed` repeats `fixed_update_s` by the accumulated step
+   count. The real clock source is the browser's rAF timestamps
+   (`forge_app::web`). `app_run` still runs a fixed frame count with no clock.
 3. **No `DefaultPlugins` list.** There is nothing in the stack a default set
    would have to register yet (the renderer and camera are plain `App` fields,
    not resources). It becomes meaningful once there are resource-bearing
@@ -715,41 +734,58 @@ As built (29 tests: 7 `command`, 8 `backend`, 2 `soft`, 13 cross-module):
 **Later backends (no core change):** a `web_wasm` WebGL `Renderer` variant, and
 a GPU/MLIR one, exactly as the interface promises.
 
-### Phase 9a: WebGL backend (P6b) - **planned**
+### Phase 9a: WebGL backend (P6b) - **done**
 
-The full plan, including the audit and the monad-side half (GL externs in
-`web_wasm`, `Canvas.get_context`, typed `ByteBuf` stores, `stub_gl.mjs`), is
-`plans-monad/implementations/web-webgl.md` (2026-11-13). The first consumer
-is the Multi millionær board game
-(`plans-monad/products/multi-millionaer-architecture.md`). Forge's part:
+The design is `plans-monad/implementations/web-webgl.md` (Forge P3–P5).
+As built (2026-11-17):
 
-1. **`app_frame` (web-webgl P3).** Factor the pure half out of `app_step`:
-   `app_frame (a) (world) : Pair World (List RenderCommand)`, which runs
-   propagate → `run_schedule_pure` → `extract`. `app_step` becomes
-   `app_frame` + `renderer_submit`/`renderer_present`, so existing tests
-   do not change.
-2. **`MeshData` + material table (P3)** in `forge-render`: positions/uvs/
-   indices, `pack` into `ByteBuf`s via `ByteBuf.set_f32_le`/`set_u16_le`,
-   code-built `quad`/`box`/`disc`/`cylinder`, `TextureDesc`, and
-   `MaterialHandle` → (shader kind, texture?, tint).
-3. **`motes/forge-webgl/` (new, P4).** A wasm-only mote (depends on
-   `forge-render`, `forge-math`, `web_wasm`), kept out of the native
-   `monad test -w`. `WebGlRenderer` holds handle registries, two shaders
-   (unlit-textured, flat-colour), and `submit`/`present`/`resize` over
-   `List RenderCommand`. **Why not a `Renderer` enum arm:** it would pull
-   web-only natives into `forge-render`, breaking native builds and tests.
-   **Why not a backend type class:** it would put constrained generics on
-   the per-frame path, where the compiled backend has had dictionary
-   miscompiles.
-4. **Parity test (P4).** One scene → `extract` → the soft recording and
-   `forge-webgl` under `stub_gl.mjs` must agree (same draw count, golden GL
-   stream).
-5. **Picking (P5)** in `forge-math`: `mat4_inverse`, `screen_to_ray`, and
-   `ray_plane_hit`/`ray_aabb_hit`/`ray_sphere_hit : Option F64`, with the
-   `Bool` forms rewritten on top.
-6. **Frame driver (P5).** oak `Subscription.animation_frame` → `app_frame` →
-   `WebGlRenderer.submit`. dt comes from successive rAF timestamps and feeds
-   `Time`. This replaces "a real clock source" from Phase 7, deviation 2.
+1. **forge-math picking.** `mat4_inverse : Option Mat4` (2x2
+   sub-determinants), `mat4_to_list` (column-major, the `uniformMatrix4fv`
+   layout), `ray_sphere_hit`/`ray_aabb_hit`/`ray_plane_hit : Option F64` with
+   the `Bool` forms rewritten on top, and `screen_to_ray (inv_view_proj) (w)
+   (h) (x) (y)` (top-left pixel origin). `num`'s `sin`/`cos`/`sqrt`/`pi` and a
+   new `f64_of_i64` are now re-exported (a mesh builder needs them).
+2. **forge-render data + the shared core.** `mesh.mo` (`MeshData`:
+   interleaved `x y z u v`, CCW triangle indices; `mesh_quad`/`box`/`cube`/
+   `disc`/`cylinder`, `mesh_bounds`), `material.mo` (`ShaderKind
+   {flat, textured}`, `TextureDesc`, `Material`, and `Assets`: dense
+   handle -> data tables), `plan.mo` (`frame_plan assets cmds : FramePlan` —
+   clear, camera, resolved `DrawCall`s in order, unknown meshes skipped and
+   counted, unknown materials -> flat white) and `pick.mo` (`pick_entity`:
+   nearest hit of a ray against each drawable's local bounds).
+   **`frame_plan` is the shared core:** every decision a backend could
+   disagree on is made here, purely, and is natively tested. Packing moved
+   to `Gl.f32_buf`/`i32_buf` (`std::buf`), so forge-render has no IO.
+3. **`app_frame`.** `app_frame (a) (w) : Frame {world, commands}` is
+   propagate -> schedule -> propagate -> extract; `app_step` is `app_frame`
+   + submit/present (existing tests unchanged; a new one asserts the
+   equivalence). `app_frame_dt` adds the clock; `app_plan` resolves against
+   `App.assets`. The second propagate means a system's moves are drawn the
+   same frame.
+4. **`motes/forge-webgl`** (`targets = ["web"]`, no tests of its own):
+   `WebGlRenderer` holds two GLSL ES 1.00 programs (work on WebGL1 and 2),
+   per-mesh VBO/IBO (32-bit indices; setup fails clearly without
+   `OES_element_index_uint`), per-texture `GlImage` polled each frame (a
+   textured draw is drawn flat until its image is ready). `webgl_submit`
+   executes a `FramePlan`; on context loss it draws nothing and the first
+   frame after restore relinks and re-uploads everything.
+5. **`forge_app::web`** (web-only, not re-exported by `lib.mo`):
+   `web_mount app rig` / `web_dispatch` / `web_tick` are the bodies of the
+   three loader exports. rAF timestamps -> `dt` (clamped to 0.25 s) ->
+   `CameraRig` camera for the canvas aspect -> `app_frame_dt` -> `app_plan`
+   -> `webgl_submit`; a canvas click picks against the last frame's world
+   and sets `data-picked`. It drives frames through `web_wasm` directly
+   (`Dom.on_frame`, `Keep`), not through oak.
+6. **Demo + parity.** `src/main.mo`: a spinning cube with an orbiting
+   cylinder and a spinning cap over a textured floor. Parity is structural
+   (both backends consume the commands `frame_plan` resolves) and asserted
+   natively (`test_soft_recording_and_plan_agree`); on the web side
+   `scripts/web-smoke.sh` builds the bin for `wasm32-unknown-unknown` and
+   runs `tests/web/forge_webgl_smoke.mjs` over monad's `stub_dom`/`stub_gl`
+   in webgl2, webgl1 and no-WebGL modes.
+
+**Not done:** a manual check in a real browser (no browser in this
+environment).
 
 ## What is deferred
 
@@ -758,11 +794,32 @@ is the Multi millionær board game
 - **Networking (P12)**: UDP transport + rollback — deferred.
 - **UI (P9)**: retained-mode tree + flexbox — deferred (depends on rendering).
 - **Input/Window (P6)**: native OS bindings — deferred; the `Renderer`
-  interface already carries `resize`, and `web_wasm` provides DOM events for
-  the web path.
+  interface already carries `resize`, and the web path has canvas resize
+  (`webgl_resize`) and click picking (`forge_app::web`). Keyboard and
+  pointer-move input for games is the next web-side piece.
+- **Fiber-executed batches / per-reader event cursors**: still metadata
+  (`stage_batches`) and a single queue; both need a consumer first.
+- **`DefaultPlugins`**: nothing to register yet.
 - **Editor (P13)**: depends on UI — deferred.
 - **GPU/MLIR backends**: interface is Phase 8; they land when monad's
-  MLIR/GPU support exists. WebGL is no longer deferred; see Phase 9a.
+  MLIR/GPU support exists, as further executors of a `FramePlan`.
+
+## Gaps in monad and its motes
+
+Recorded in full, with repros and the workarounds above, in
+`plans-monad/implementations/2026-11-17-forge-webgl-consumer-gaps.md`
+(the earlier log is `2026-09-26-external-mote-gaps-for-forge.md`).
+
+| # | Gap | Forge workaround |
+|---|---|---|
+| G1 | `Monad.pure` through `StateT S (ResultT E M)` is miscompiled | `FallibleWorld` is a hand-written monad |
+| G2 | member-scoped commands miss a workspace git dep's lock | `-w` from the root only |
+| G3 | a typed `let x : T <- ...` is still affine as a type variable | reuse moved into helpers with typed parameters |
+| G4 | an unresolved `use` is only a warning (`check` says 0 errors) | the stale `use lib::schedule` is fixed |
+| G5 | `web_wasm`'s `Node` and GL enums have no `Copy` | forge-webgl declares `Copy Node`; enums rebuilt per use |
+| G6 | the web loader contract is oak-named and single-app (`Keep`) | forge exports `oak_mount`/`oak_dispatch_event`/a no-op `oak_tick` |
+| G7 | web host JS and stubs are not shipped to consumers; the loader generator and the wasm build need undocumented env | `scripts/web-smoke.sh` reads them from a monad checkout at the pin; `devenv.nix` sets `MONAD_WEB_CC` |
+| G8 | no `I64` -> `F64` in `init` | `f64_of_i64` in forge-math |
 
 ## TDD approach
 
@@ -775,6 +832,19 @@ monad check -w                           # typecheck the whole workspace
 monad test motes/forge-core/src/tests/   # a single directory
 monad check motes/forge-math/            # a single mote
 ```
+
+The web side has no native tests (a native binary cannot link WebGL
+externs); it is gated by a wasm build plus the stub-GL smoke:
+
+```bash
+devenv shell -- scripts/web-smoke.sh     # needs a monad checkout (MONAD_SRC, default ../monad)
+```
+
+The dev shell sets `MONAD_WEB_CC` to `clang-unwrapped`: nix's wrapped clang
+injects hardening and glibc linker flags the wasm target rejects. A
+member-scoped build cannot see the workspace's lock (gap G2), so the script
+copies the root `mote.lock` into `forge-app`/`forge-webgl` for the build
+and removes it after.
 
 Because instance resolution is a run-time step, **`monad test` is the real
 gate** — a missing `Monad`/`MonadState` instance type-checks and only fails
@@ -791,4 +861,5 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 6: forge-reactive (`Signal`/`Derived` over `Ref`, `EventStream` with a per-frame budget; 31 tests). All IO; both types travel as `Shared`.
 - [x] Phase 7: forge-app (`App` builder, `Plugin`, `app_step`/`app_run` IO loop, demo; 15 tests).
 - [x] Phase 8: forge-render (`RenderCommand` enum, `extract`, `Renderer` enum + soft/headless backends; 29 tests). The core knows no backend.
-- [ ] Phase 9a: WebGL backend (`app_frame`, `MeshData`, wasm-only `forge-webgl`, parity test, picking); plan in `plans-monad/implementations/web-webgl.md`
+- [x] Phase 9a: WebGL backend (`app_frame`/`app_frame_dt`, `MeshData`/`Assets`/`frame_plan`, wasm-only `forge-webgl`, `forge_app::web` driver, picking, parity + stub-GL smoke); browser check outstanding
+- [x] Deviations closed: `AppWorld`/`FallibleWorld`, fixed timestep in the loop, linear transform propagation, memoized `Memo`

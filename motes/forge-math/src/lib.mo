@@ -1,15 +1,21 @@
 // forge-math: Vec2/Vec3/Vec4, Quat, Mat3/Mat4, and intersection primitives.
 // Phase 3, see ../../../PLAN.md.
 //
-// `num` is deliberately NOT re-exported: it is the F64 layer the rest of this
-// mote is built on (there is no `sqrt`/`sin`/`cos` in the toolchain), not part
-// of the public math surface.
+// `num` is the F64 layer the rest of this mote is built on (there is no
+// `sqrt`/`sin`/`cos`/int->float in the toolchain). Only the handful of
+// scalars a CONSUMER cannot do without are re-exported -- a mesh builder
+// needs `sin`/`cos` and a segment count as a float, a game needs an angle --
+// the approximation helpers stay private.
 //
 // `Array` is not usable (not `pub` in `std::array`), and the toolchain ships no
 // generic `Vec (N : I64)` that could derive `Copy`, so each vector size is its
 // own monomorphic struct (`Vec2`/`Vec3`/`Vec4`) and each operation is suffixed
 // by size (`v3_add`, `v2_dot`, ...).
 
+pub use lib::num {
+    f64_pi, f64_half_pi, f64_tau, f64_abs, f64_min, f64_max, f64_clamp, f64_sqrt,
+    f64_sin, f64_cos, f64_of_i64
+}
 pub use lib::vec {
     Vec2, vec2, v2_zero, v2_one, v2_add, v2_sub, v2_scale, v2_neg, v2_dot,
     v2_length_sq, v2_length, v2_distance, v2_normalize, v2_perp, v2_lerp,
@@ -33,7 +39,7 @@ pub use lib::mat {
     mat4_transform_point, mat4_transform_dir, mat4_translate, mat4_scale,
     mat4_uniform_scale, mat4_from_quat, mat4_rotate_axis_angle, mat4_trs,
     mat4_transpose, mat4_perspective, mat4_orthographic, mat4_look_at,
-    mat4_to_mat3
+    mat4_to_mat3, mat4_to_list, mat4_inverse, mat4_max_diff
 }
 pub use lib::intersect {
     Ray, ray, ray_at, ray_normalize,
@@ -42,5 +48,6 @@ pub use lib::intersect {
     aabb_contains,
     Sphere, sphere,
     ray_intersects_sphere, ray_intersects_aabb, aabb_intersects_aabb,
-    sphere_intersects_sphere, ray_intersects_plane
+    sphere_intersects_sphere, ray_intersects_plane,
+    ray_sphere_hit, ray_aabb_hit, ray_plane_hit, screen_to_ray
 }

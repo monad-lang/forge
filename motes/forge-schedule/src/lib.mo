@@ -23,6 +23,9 @@ pub use lib::schedule {
     Schedule, empty_schedule, add_system, add_system_to, schedule_systems,
     schedule_len, systems_in_stage, stage_system_count, stage_batches,
     run_systems, run_stage, run_schedule, run_schedule_pure, run_fixed_steps,
+    run_schedule_timed, run_frame,
     Time, time_new, time_advance, time_elapsed, time_delta, time_fixed_steps,
-    time_accumulator
+    time_accumulator, time_fixed_delta,
+    time_name, default_fixed_delta, world_time_opt, world_time, world_set_time,
+    world_advance_time
 }

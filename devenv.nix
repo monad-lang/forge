@@ -27,6 +27,14 @@ in
     boehmgc-static
   ];
 
+  # The web profile (`--target wasm32-unknown-unknown`) compiles the C
+  # runtime and links with clang. The nix-WRAPPED `clang` above injects
+  # hardening flags (`-fzero-call-used-regs=used-gpr`) and a glibc
+  # `-dynamic-linker`, both of which the wasm target rejects; `monad`
+  # honours `MONAD_WEB_CC` for exactly this (llvm/src/target.mo,
+  # `TargetPlan.web_cc`). wasm-ld comes from `lld` on PATH.
+  env.MONAD_WEB_CC = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang";
+
   # https://devenv.sh/basics/
   enterShell = "";
 

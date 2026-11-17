@@ -164,3 +164,50 @@ def test_scale_propagates_into_the_child_translation : Bool :=
         Option.some t => v3_approx t (vec3 2.0 0.0 0.0),
         Option.none => false
     }
+
+// ── A wide, deep hierarchy (the child index) ────────────────────────
+//
+// One root at x = 1, with `n` children each offset by x = 1, each of which
+// has a grandchild offset by y = 1. Propagation reads the hierarchy from an
+// index built in one pass; this checks every sibling and every grandchild is
+// still reached, not just the first.
+
+#[terminating]
+def add_branches (world : World) (root : Entity) (n : I64) : World :=
+    if I64.lt 0 n
+    then
+        let child : Spawned := spawn_child_at world root (vec3 1.0 0.0 0.0) in
+        let grand : Spawned := spawn_child_at child.world child.entity (vec3 0.0 1.0 0.0) in
+        add_branches grand.world root (I64.sub n 1)
+    else world
+
+#[terminating]
+def count_at (world : World) (es : List Entity) (want : Vec3) (n : I64) : I64 :=
+    match es {
+        List.empty => n,
+        List.cons e rest =>
+            match entity_global_translation world e {
+                Option.some t => count_at world rest want (if v3_approx t want then I64.add n 1 else n),
+                Option.none => count_at world rest want n
+            }
+    }
+
+#[test]
+def test_wide_hierarchy_reaches_every_sibling_and_grandchild : Bool :=
+    let root : Spawned := spawn_transform empty_world (transform_from_translation (vec3 1.0 0.0 0.0)) in
+    let world : World := propagate_transforms (add_branches root.world root.entity 6) in
+    // 1 root + 6 children at (2,0,0) + 6 grandchildren at (2,1,0).
+    I64.beq (world_entity_count world) 13
+        && I64.beq (count_at world (all_transformed world) (vec3 2.0 0.0 0.0) 0) 6
+        && I64.beq (count_at world (all_transformed world) (vec3 2.0 1.0 0.0) 0) 6
+        && I64.beq (count_at world (all_transformed world) (vec3 1.0 0.0 0.0) 0) 1
+
+#[test]
+def test_two_roots_propagate_independently : Bool :=
+    let a : Spawned := spawn_transform empty_world (transform_from_translation (vec3 10.0 0.0 0.0)) in
+    let b : Spawned := spawn_transform a.world (transform_from_translation (vec3 0.0 20.0 0.0)) in
+    let ca : Spawned := spawn_child_at b.world a.entity (vec3 1.0 0.0 0.0) in
+    let cb : Spawned := spawn_child_at ca.world b.entity (vec3 1.0 0.0 0.0) in
+    let world : World := propagate_transforms cb.world in
+    I64.beq (count_at world (all_transformed world) (vec3 11.0 0.0 0.0) 0) 1
+        && I64.beq (count_at world (all_transformed world) (vec3 1.0 20.0 0.0) 0) 1

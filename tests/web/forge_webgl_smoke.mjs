@@ -1,0 +1,152 @@
+#!/usr/bin/env node
+// The forge web demo (motes/forge-app/src/main.mo) over monad's stub DOM and
+// recording stub WebGL. Staged and run by scripts/web-smoke.sh:
+//
+//   node target/web/smoke/forge_webgl_smoke.mjs target/web/app.wasm [webgl2|webgl1|none]
+//
+// It drives the REAL loader host (`web_runtime.js`), so forge-webgl's GL
+// calls, web_wasm's externs and the JS host are checked against each other.
+// Checks, in order:
+//   - mount: a <canvas id="forge"> exists; with no WebGL the failure is
+//     reported on the page and nothing else happens;
+//   - setup: two programs link, four meshes upload (vertex floats = 5 per
+//     vertex, 32-bit indices);
+//   - a frame: the frame plan's 4 draws become exactly 4 drawElements, with
+//     each mesh's index count, after viewport + clear; the floor texture is
+//     still loading, so every draw uses the flat program;
+//   - the floor image arrives: it is uploaded once and the floor draw binds it;
+//   - picking: a click at the centre picks an entity, the empty top-left
+//     corner picks nothing (`data-picked`);
+//   - context loss: a lost frame draws nothing; the frame after restore
+//     relinks both programs, re-uploads all meshes, and draws again.
+
+import { readFile } from 'node:fs/promises';
+import { imports } from '../web.js';
+import { host } from '../web_runtime.js';
+import { installDocument, body, fail } from './stub_dom.mjs';
+import { installGl, glStub, finishImages } from './stub_gl.mjs';
+
+const path = process.argv[2];
+const mode = process.argv[3] || 'webgl2';
+if (!path) {
+  console.error('usage: node forge_webgl_smoke.mjs <app.wasm> [webgl2|webgl1|none]');
+  process.exit(2);
+}
+
+installDocument();
+installGl({ dpr: 1, clientWidth: 400, clientHeight: 300 });
+glStub.mode = mode;
+
+function byId(id) {
+  const walk = (n) => {
+    if (n.attrs && n.attrs.id === id) return n;
+    for (const c of n.childNodes || []) {
+      const found = walk(c);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(body);
+}
+
+const bytes = await readFile(path);
+const { instance } = await WebAssembly.instantiate(bytes, imports);
+host.bind(instance);
+host.set_root('#app');
+instance.exports.oak_mount();
+
+const canvas = byId('forge');
+if (!canvas || canvas.tagName !== 'CANVAS') fail('mount did not create <canvas id="forge">');
+
+if (mode === 'none') {
+  const status = byId('forge-status');
+  if (!status || !status.textContent.includes('no WebGL context')) {
+    fail(`no-WebGL status: ${JSON.stringify(status && status.textContent)}`);
+  }
+  console.log(`ok: ${path} [none] -> the missing context is reported`);
+  process.exit(0);
+}
+
+if (glStub.contexts.length !== 1) fail(`expected one context, got ${glStub.contexts.length}`);
+const gl = glStub.contexts[0];
+const names = (calls) => calls.map((c) => c[0]);
+const count = (calls, name) => calls.filter((c) => c[0] === name).length;
+
+// ── setup ──
+{
+  const setup = gl.calls;
+  if (count(setup, 'linkProgram') !== 2) fail(`setup linked ${count(setup, 'linkProgram')} programs`);
+  const uploads = setup.filter((c) => c[0] === 'bufferData');
+  if (uploads.length !== 8) fail(`setup made ${uploads.length} bufferData calls, want 8 (4 meshes)`);
+  const vertexFloats = uploads.filter((c) => c[1] === 0x8892).map((c) => c[2].length).sort((a, b) => a - b);
+  // quad 4, box 24, cube 24, cylinder 4*24+4 = 100 vertices; 5 floats each.
+  const want = [20, 120, 120, 500];
+  if (JSON.stringify(vertexFloats) !== JSON.stringify(want)) {
+    fail(`vertex upload sizes ${JSON.stringify(vertexFloats)}, want ${JSON.stringify(want)}`);
+  }
+  if (count(setup, 'createTexture') !== 1) fail('the floor texture was not created');
+}
+
+// ── the frame loop ──
+let pending = null;
+globalThis.requestAnimationFrame = (cb) => { pending = cb; };
+host.start_ticks(instance);
+function frame(ts) {
+  if (typeof pending !== 'function') fail('the frame loop is not scheduled');
+  const cb = pending;
+  pending = null;
+  const before = gl.calls.length;
+  cb(ts);
+  return gl.calls.slice(before);
+}
+
+const indexCounts = (calls) =>
+  calls.filter((c) => c[0] === 'drawElements').map((c) => c[2]).sort((a, b) => a - b);
+// quad 6, small box 36, cube 36, cylinder (2n + 2n triangles) * 3 = 288.
+const wantCounts = JSON.stringify([6, 36, 36, 288]);
+
+const f1 = frame(1000);
+{
+  const n = names(f1);
+  if (count(f1, 'drawElements') !== 4) fail(`frame 1 drew ${count(f1, 'drawElements')}, want 4`);
+  if (JSON.stringify(indexCounts(f1)) !== wantCounts) fail(`frame 1 index counts ${JSON.stringify(indexCounts(f1))}`);
+  const vp = n.indexOf('viewport');
+  const cl = n.indexOf('clear');
+  const firstDraw = n.indexOf('drawElements');
+  if (!(vp >= 0 && vp < cl && cl < firstDraw)) fail(`frame 1 order: ${JSON.stringify(n)}`);
+  if (count(f1, 'bindTexture') !== 0) fail('a texture was bound before its image loaded');
+  // view + projection for each of the two programs, plus one model per draw.
+  if (count(f1, 'uniformMatrix4fv') !== 8) fail(`frame 1 set ${count(f1, 'uniformMatrix4fv')} matrices, want 8`);
+}
+
+finishImages();
+const f2 = frame(1016);
+{
+  const uploads = f2.filter((c) => c[0] === 'texImage2D');
+  if (uploads.length !== 1 || uploads[0][uploads[0].length - 1] !== 'image:forge-floor.png') {
+    fail(`the floor image upload: ${JSON.stringify(uploads)}`);
+  }
+  if (count(f2, 'drawElements') !== 4) fail(`frame 2 drew ${count(f2, 'drawElements')}, want 4`);
+  if (count(f2, 'bindTexture') < 2) fail('the textured floor draw did not bind its texture');
+}
+const f3 = frame(1032);
+if (count(f3, 'texImage2D') !== 0) fail('the floor image was uploaded twice');
+
+// ── picking ──
+canvas.fire('click', { offsetX: 200, offsetY: 150 });
+const centre = canvas.attrs['data-picked'];
+if (centre === undefined || Number(centre) < 0) fail(`a centre click picked ${JSON.stringify(centre)}`);
+canvas.fire('click', { offsetX: 1, offsetY: 1 });
+if (canvas.attrs['data-picked'] !== '-1') fail(`an empty-corner click picked ${canvas.attrs['data-picked']}`);
+
+// ── context loss and restore ──
+glStub.lost = true;
+const lostFrame = frame(1048);
+if (count(lostFrame, 'drawElements') !== 0) fail('a lost context was drawn to');
+glStub.lost = false;
+const back = frame(1064);
+if (count(back, 'linkProgram') !== 2) fail(`restore relinked ${count(back, 'linkProgram')} programs, want 2`);
+if (count(back, 'bufferData') !== 8) fail(`restore re-uploaded ${count(back, 'bufferData')} buffers, want 8`);
+if (count(back, 'drawElements') !== 4) fail(`the restored frame drew ${count(back, 'drawElements')}, want 4`);
+
+console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), loss + restore`);

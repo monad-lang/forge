@@ -39,5 +39,7 @@ pub use lib::query {
 
 pub use lib::world_m {
     WorldM, WorldM.run, WorldM.run_state, WorldM.get, WorldM.put, WorldM.modify,
-    WorldM.lift, PureWorld, PureWorld.run
+    WorldM.lift, PureWorld, PureWorld.run,
+    AppWorld, AppWorld.run, FallibleWorld, FallibleWorld.run, FallibleWorld.fail,
+    FallibleWorld.of_result, FallibleWorld.lift, FallibleWorld.get, FallibleWorld.modify
 }

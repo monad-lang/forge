@@ -3,8 +3,13 @@
 //
 // `command` is the vocabulary (RenderCommand + Camera/MeshHandle/Color);
 // `extract` turns a `World` into commands; `backend` is the `Renderer`
-// interface; `soft` is the headless recording backend. Adding a GPU or WebGL
-// backend means adding a `Renderer` variant, not touching any of the rest.
+// interface; `soft` is the headless recording backend.
+//
+// Phase 9a added the data a REAL backend needs, still with no backend type in
+// sight: `mesh` (geometry), `material` (materials, textures, the `Assets`
+// table), `plan` (`frame_plan`: commands + assets -> a resolved `FramePlan`)
+// and `pick`. A drawing backend is an executor of a `FramePlan` (forge-webgl
+// is the first); it makes no decisions of its own.
 
 pub use lib::command {
     MeshHandle, mesh_handle, mesh_handle_id,
@@ -27,4 +32,37 @@ pub use lib::backend {
     Renderer, headless_renderer, soft_renderer,
     renderer_submit, renderer_present, renderer_resize, renderer_shutdown,
     renderer_is_recording, renderer_recorded, renderer_size, renderer_draw_frame
+}
+
+pub use lib::mesh {
+    MeshData, mesh_data, mesh_stride, mesh_vertices, mesh_indices, mesh_vertex_count,
+    mesh_index_count, mesh_triangle_count, mesh_is_valid, mesh_bounds,
+    mesh_quad, mesh_box, mesh_cube, mesh_disc, mesh_cylinder
+}
+
+pub use lib::material {
+    ShaderKind, shader_flat, shader_textured, shader_kind_code,
+    TextureHandle, texture_handle, texture_handle_id, texture_none, texture_is_none,
+    TextureFilter, filter_nearest, filter_linear, TextureWrap, wrap_repeat, wrap_clamp,
+    TextureDesc, texture_desc, texture_from_url, texture_url, texture_filter,
+    texture_wrap, texture_is_linear, texture_repeats,
+    Material, material_flat, material_textured, material_default, material_shader,
+    material_tint, material_texture,
+    Assets, assets_empty, MeshAdded, MaterialAdded, TextureAdded,
+    assets_add_mesh, assets_add_material, assets_add_texture,
+    assets_mesh, assets_material, assets_texture, assets_mesh_ids, assets_texture_ids,
+    assets_mesh_count, assets_material_count, assets_texture_count,
+    assets_material_or_default
+}
+
+pub use lib::plan {
+    DrawCall, draw_call_mesh, draw_call_shader, draw_call_tint, draw_call_texture,
+    draw_call_model,
+    FramePlan, plan_empty, plan_clears, plan_clear_color, plan_view, plan_projection,
+    plan_view_projection, plan_draws, plan_draw_count, plan_skipped, plan_presents,
+    resolve_draw, frame_plan, camera_screen_ray
+}
+
+pub use lib::pick {
+    Picked, picked_entity, picked_distance, ray_hits_placed_box, pick_entity
 }

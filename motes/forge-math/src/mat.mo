@@ -11,7 +11,7 @@ use lib::vec {
     Vec4, vec4, v4_add, v4_scale
 }
 use lib::quat {Quat, quat_from_axis_angle}
-use lib::num {f64_sin, f64_cos}
+use lib::num {f64_sin, f64_cos, f64_abs}
 
 // ── Mat3 ────────────────────────────────────────────────────────────
 
@@ -208,6 +208,90 @@ pub def mat4_look_at (eye : Vec3) (center : Vec3) (up : Vec3) : Mat4 :=
       cw := vec4 (0.0 - v3_dot s eye) (0.0 - v3_dot u eye) (v3_dot f eye) 1.0
       : Mat4 }
 
+/// The sixteen entries in COLUMN-MAJOR order (`cx.x, cx.y, cx.z, cx.w, cy.x,
+/// ...`) -- the layout `uniformMatrix4fv` takes with `transpose = false`.
+pub def mat4_to_list (m : Mat4) : List F64 :=
+    [m.cx.x, m.cx.y, m.cx.z, m.cx.w,
+     m.cy.x, m.cy.y, m.cy.z, m.cy.w,
+     m.cz.x, m.cz.y, m.cz.z, m.cz.w,
+     m.cw.x, m.cw.y, m.cw.z, m.cw.w]
+
+/// The determinant threshold below which a matrix is treated as singular.
+def mat4_singular_eps : F64 := 0.000000000001
+
+/// The general 4x4 inverse by 2x2 sub-determinants (Laplace expansion), or
+/// `none` when the matrix is singular. `aRC` below is row R, column C, so
+/// column `cy` holds `a01 a11 a21 a31`.
+pub def mat4_inverse (m : Mat4) : Option Mat4 :=
+    let a00 : F64 := m.cx.x in
+    let a10 : F64 := m.cx.y in
+    let a20 : F64 := m.cx.z in
+    let a30 : F64 := m.cx.w in
+    let a01 : F64 := m.cy.x in
+    let a11 : F64 := m.cy.y in
+    let a21 : F64 := m.cy.z in
+    let a31 : F64 := m.cy.w in
+    let a02 : F64 := m.cz.x in
+    let a12 : F64 := m.cz.y in
+    let a22 : F64 := m.cz.z in
+    let a32 : F64 := m.cz.w in
+    let a03 : F64 := m.cw.x in
+    let a13 : F64 := m.cw.y in
+    let a23 : F64 := m.cw.z in
+    let a33 : F64 := m.cw.w in
+    let s0 : F64 := a00 * a11 - a10 * a01 in
+    let s1 : F64 := a00 * a12 - a10 * a02 in
+    let s2 : F64 := a00 * a13 - a10 * a03 in
+    let s3 : F64 := a01 * a12 - a11 * a02 in
+    let s4 : F64 := a01 * a13 - a11 * a03 in
+    let s5 : F64 := a02 * a13 - a12 * a03 in
+    let c5 : F64 := a22 * a33 - a32 * a23 in
+    let c4 : F64 := a21 * a33 - a31 * a23 in
+    let c3 : F64 := a21 * a32 - a31 * a22 in
+    let c2 : F64 := a20 * a33 - a30 * a23 in
+    let c1 : F64 := a20 * a32 - a30 * a22 in
+    let c0 : F64 := a20 * a31 - a30 * a21 in
+    let det : F64 := s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0 in
+    if f64_abs det < mat4_singular_eps
+    then Option.none
+    else
+        let k : F64 := 1.0 / det in
+        Option.some
+            { cx := vec4 ((a11 * c5 - a12 * c4 + a13 * c3) * k)
+                         ((a12 * c2 - a10 * c5 - a13 * c1) * k)
+                         ((a10 * c4 - a11 * c2 + a13 * c0) * k)
+                         ((a11 * c1 - a10 * c3 - a12 * c0) * k),
+              cy := vec4 ((a02 * c4 - a01 * c5 - a03 * c3) * k)
+                         ((a00 * c5 - a02 * c2 + a03 * c1) * k)
+                         ((a01 * c2 - a00 * c4 - a03 * c0) * k)
+                         ((a00 * c3 - a01 * c1 + a02 * c0) * k),
+              cz := vec4 ((a31 * s5 - a32 * s4 + a33 * s3) * k)
+                         ((a32 * s2 - a30 * s5 - a33 * s1) * k)
+                         ((a30 * s4 - a31 * s2 + a33 * s0) * k)
+                         ((a31 * s1 - a30 * s3 - a32 * s0) * k),
+              cw := vec4 ((a22 * s4 - a21 * s5 - a23 * s3) * k)
+                         ((a20 * s5 - a22 * s2 + a23 * s1) * k)
+                         ((a21 * s2 - a20 * s4 - a23 * s0) * k)
+                         ((a20 * s3 - a21 * s1 + a22 * s0) * k)
+              : Mat4 }
+
+/// The largest absolute difference between two matrices' entries.
+pub def mat4_max_diff (a : Mat4) (b : Mat4) : F64 :=
+    mat4_max_diff_go (mat4_to_list a) (mat4_to_list b) 0.0
+
+#[terminating]
+def mat4_max_diff_go (xs : List F64) (ys : List F64) (acc : F64) : F64 :=
+    match xs {
+        List.empty => acc,
+        List.cons x xt =>
+            match ys {
+                List.empty => acc,
+                List.cons y yt =>
+                    let d : F64 := f64_abs (x - y) in
+                    mat4_max_diff_go xt yt (if d > acc then d else acc)
+            }
+    }
+
 #[test]
 def test_mat3_identity_is_unit : Bool :=
     let v : Vec3 := vec3 1.0 2.0 3.0 in
@@ -298,3 +382,46 @@ def test_mat4_to_mat3_drops_translation : Bool :=
     let v : Vec3 := vec3 1.0 0.0 0.0 in
     let r : Vec3 := mat3_mul_vec3 m3 v in
     v3_dot r v > 0.9999
+
+#[test]
+def test_mat4_to_list_is_column_major : Bool :=
+    let xs : List F64 := mat4_to_list (mat4_translate (vec3 7.0 8.0 9.0)) in
+    match List.get 12 xs {
+        Option.some tx => F64.beq tx 7.0 && I64.beq (List.length (mat4_to_list mat4_identity)) 16,
+        Option.none => false
+    }
+
+#[test]
+def test_mat4_inverse_of_identity : Bool :=
+    match mat4_inverse mat4_identity {
+        Option.some inv => mat4_max_diff inv mat4_identity < 0.0000001,
+        Option.none => false
+    }
+
+#[test]
+def test_mat4_inverse_times_self_is_identity : Bool :=
+    let m : Mat4 := mat4_trs (vec3 1.0 2.0 3.0) (quat_from_axis_angle (vec3 0.0 1.0 0.0) 0.6) (vec3 2.0 3.0 4.0) in
+    match mat4_inverse m {
+        Option.some inv =>
+            let i : Mat4 := inv in
+            mat4_max_diff (mat4_mul m i) mat4_identity < 0.000001
+                && mat4_max_diff (mat4_mul i m) mat4_identity < 0.000001,
+        Option.none => false
+    }
+
+#[test]
+def test_mat4_inverse_of_a_projection : Bool :=
+    let m : Mat4 :=
+        mat4_mul (mat4_perspective 1.0 1.5 0.1 100.0)
+                 (mat4_look_at (vec3 3.0 4.0 5.0) (vec3 0.0 0.0 0.0) (vec3 0.0 1.0 0.0)) in
+    match mat4_inverse m {
+        Option.some inv => mat4_max_diff (mat4_mul m inv) mat4_identity < 0.00001,
+        Option.none => false
+    }
+
+#[test]
+def test_mat4_inverse_of_a_singular_matrix_is_none : Bool :=
+    match mat4_inverse (mat4_scale (vec3 1.0 0.0 1.0)) {
+        Option.some _ => false,
+        Option.none => true
+    }

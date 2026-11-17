@@ -1,13 +1,26 @@
 // forge-math: Ray / Plane / AABB / Sphere and their intersection predicates.
 //
-// All boolean "does X hit Y". The ray/AABB test is the slab method: it divides
+// Each ray test comes in two forms: `ray_*_hit : Option F64` (the distance
+// `t` along the ray to the nearest forward hit) and the boolean
+// `ray_intersects_*`, which is the `_hit` form asked "is there one". Ray
+// directions are assumed UNIT, so `t` is a distance (`screen_to_ray` returns
+// a unit ray).
+//
+// The ray/AABB test is the slab method. The ray/AABB test is the slab method: it divides
 // by each direction component, which yields `+-inf` for an axis-aligned ray and
 // then folds away correctly in the `min`/`max` (IEEE infinities compare the
 // ordinary way, and `f64_div` is a C `double` divide).
+//
+// `screen_to_ray` is the picking entry point: a pixel plus the INVERSE
+// view-projection gives the world-space ray under the cursor.
 
 use std::derive {}
 use lib::vec {
-    Vec3, vec3, v3_add, v3_sub, v3_scale, v3_dot, v3_normalize, v3_length, v3_length_sq
+    Vec3, vec3, v3_add, v3_sub, v3_scale, v3_dot, v3_normalize, v3_length, v3_length_sq,
+    Vec4, vec4, v4_to_v3
+}
+use lib::mat {
+    Mat4, mat4_identity, mat4_mul, mat4_mul_vec4, mat4_inverse, mat4_perspective, mat4_look_at
 }
 use lib::num {f64_abs, f64_min, f64_max, f64_sqrt}
 
@@ -79,15 +92,35 @@ pub def sphere (center : Vec3) (radius : F64) : Sphere :=
 
 // ── Intersections ───────────────────────────────────────────────────
 
-/// Does the ray hit the sphere in the forward direction?
-pub def ray_intersects_sphere (r : Ray) (s : Sphere) : Bool :=
+def is_some_f64 (o : Option F64) : Bool :=
+    match o {
+        Option.some _ => true,
+        Option.none => false
+    }
+
+/// The distance to the nearest forward hit on the sphere. A ray that starts
+/// INSIDE the sphere hits it on the way out.
+pub def ray_sphere_hit (r : Ray) (s : Sphere) : Option F64 :=
     let oc : Vec3 := v3_sub r.origin s.center in
     let b : F64 := v3_dot oc r.direction in
     let c : F64 := v3_dot oc oc - s.radius * s.radius in
     let disc : F64 := b * b - c in
-    if disc < 0.0 then false else (0.0 - b) + f64_sqrt disc >= 0.0
+    if disc < 0.0
+    then Option.none
+    else
+        let root : F64 := f64_sqrt disc in
+        let t0 : F64 := (0.0 - b) - root in
+        let t1 : F64 := (0.0 - b) + root in
+        if t0 >= 0.0 then Option.some t0
+        else if t1 >= 0.0 then Option.some t1
+        else Option.none
 
-pub def ray_intersects_aabb (r : Ray) (b : AABB) : Bool :=
+/// Does the ray hit the sphere in the forward direction?
+pub def ray_intersects_sphere (r : Ray) (s : Sphere) : Bool :=
+    is_some_f64 (ray_sphere_hit r s)
+
+/// The distance to the box along the ray (0 when the ray starts inside it).
+pub def ray_aabb_hit (r : Ray) (b : AABB) : Option F64 :=
     let inv_x : F64 := 1.0 / r.direction.x in
     let inv_y : F64 := 1.0 / r.direction.y in
     let inv_z : F64 := 1.0 / r.direction.z in
@@ -99,7 +132,12 @@ pub def ray_intersects_aabb (r : Ray) (b : AABB) : Bool :=
     let t2z : F64 := (b.max.z - r.origin.z) * inv_z in
     let tnear : F64 := f64_max (f64_max (f64_min t1x t2x) (f64_min t1y t2y)) (f64_min t1z t2z) in
     let tfar : F64 := f64_min (f64_min (f64_max t1x t2x) (f64_max t1y t2y)) (f64_max t1z t2z) in
-    tfar >= 0.0 && tnear <= tfar
+    if tfar >= 0.0 && tnear <= tfar
+    then Option.some (f64_max tnear 0.0)
+    else Option.none
+
+pub def ray_intersects_aabb (r : Ray) (b : AABB) : Bool :=
+    is_some_f64 (ray_aabb_hit r b)
 
 pub def aabb_intersects_aabb (a : AABB) (b : AABB) : Bool :=
     a.min.x <= b.max.x && a.max.x >= b.min.x
@@ -110,13 +148,34 @@ pub def sphere_intersects_sphere (a : Sphere) (b : Sphere) : Bool :=
     let r : F64 := a.radius + b.radius in
     v3_length_sq (v3_sub a.center b.center) <= r * r
 
-/// Does the ray cross the plane in the forward direction? A parallel ray is a
-/// miss (unless it lies *in* the plane, which is not "crossing" it).
-pub def ray_intersects_plane (r : Ray) (pl : Plane) : Bool :=
+/// The distance to the plane along the ray. A parallel ray is a miss (unless
+/// it lies *in* the plane, which is not "crossing" it).
+pub def ray_plane_hit (r : Ray) (pl : Plane) : Option F64 :=
     let denom : F64 := v3_dot pl.normal r.direction in
     if f64_abs denom < 0.0000001
-    then false
-    else (0.0 - (v3_dot pl.normal r.origin + pl.d)) / denom >= 0.0
+    then Option.none
+    else
+        let t : F64 := (0.0 - (v3_dot pl.normal r.origin + pl.d)) / denom in
+        if t >= 0.0 then Option.some t else Option.none
+
+/// Does the ray cross the plane in the forward direction?
+pub def ray_intersects_plane (r : Ray) (pl : Plane) : Bool :=
+    is_some_f64 (ray_plane_hit r pl)
+
+// ── Picking ─────────────────────────────────────────────────────────
+
+/// The world-space ray under pixel `(x, y)` of a `width` x `height` surface
+/// (origin TOP-left, y down -- the DOM's convention). `inv_view_proj` is
+/// `mat4_inverse (projection * view)`.
+///
+/// The pixel is unprojected twice, onto the near (`z = -1`) and far (`z = 1`)
+/// clip planes; the ray starts on the near plane and its direction is unit.
+pub def screen_to_ray (inv_view_proj : Mat4) (width : F64) (height : F64) (x : F64) (y : F64) : Ray :=
+    let nx : F64 := (2.0 * x) / width - 1.0 in
+    let ny : F64 := 1.0 - (2.0 * y) / height in
+    let near : Vec3 := v4_to_v3 (mat4_mul_vec4 inv_view_proj (vec4 nx ny (0.0 - 1.0) 1.0)) in
+    let far : Vec3 := v4_to_v3 (mat4_mul_vec4 inv_view_proj (vec4 nx ny 1.0 1.0)) in
+    { origin := near, direction := v3_normalize (v3_sub far near) : Ray }
 
 #[test]
 def test_ray_at : Bool :=
@@ -192,3 +251,69 @@ def test_aabb_center_and_half_extents : Bool :=
 def test_aabb_contains : Bool :=
     let b : AABB := aabb (vec3 -1.0 -1.0 -1.0) (vec3 1.0 1.0 1.0) in
     aabb_contains b (vec3 0.5 0.5 0.5) && Bool.not (aabb_contains b (vec3 2.0 0.0 0.0))
+
+def hit_is (o : Option F64) (want : F64) : Bool :=
+    match o {
+        Option.some t => f64_abs (t - want) < 0.0001,
+        Option.none => false
+    }
+
+#[test]
+def test_ray_sphere_hit_distance : Bool :=
+    hit_is (ray_sphere_hit (ray (vec3 0.0 0.0 0.0) (vec3 1.0 0.0 0.0)) (sphere (vec3 10.0 0.0 0.0) 1.0)) 9.0
+
+#[test]
+def test_ray_sphere_hit_from_inside_is_the_exit : Bool :=
+    hit_is (ray_sphere_hit (ray (vec3 0.0 0.0 0.0) (vec3 1.0 0.0 0.0)) (sphere (vec3 0.0 0.0 0.0) 2.0)) 2.0
+
+#[test]
+def test_ray_sphere_hit_miss_is_none : Bool :=
+    Bool.not (is_some_f64 (ray_sphere_hit (ray (vec3 0.0 5.0 0.0) (vec3 1.0 0.0 0.0)) (sphere (vec3 10.0 0.0 0.0) 1.0)))
+
+#[test]
+def test_ray_aabb_hit_distance : Bool :=
+    hit_is (ray_aabb_hit (ray (vec3 0.0 0.0 0.0) (vec3 1.0 0.0 0.0)) (aabb (vec3 4.0 -1.0 -1.0) (vec3 6.0 1.0 1.0))) 4.0
+
+#[test]
+def test_ray_aabb_hit_from_inside_is_zero : Bool :=
+    hit_is (ray_aabb_hit (ray (vec3 0.0 0.0 0.0) (vec3 0.0 0.0 -1.0)) (aabb (vec3 -1.0 -1.0 -1.0) (vec3 1.0 1.0 1.0))) 0.0
+
+#[test]
+def test_ray_plane_hit_distance : Bool :=
+    hit_is (ray_plane_hit (ray (vec3 0.0 0.0 0.0) (vec3 0.0 0.0 -1.0)) (plane (vec3 0.0 0.0 1.0) 5.0)) 5.0
+
+#[test]
+def test_ray_plane_hit_behind_is_none : Bool :=
+    Bool.not (is_some_f64 (ray_plane_hit (ray (vec3 0.0 0.0 0.0) (vec3 0.0 0.0 1.0)) (plane (vec3 0.0 0.0 1.0) 5.0)))
+
+/// A camera at (0,0,5) looking at the origin, 800x600.
+def pick_inverse : Mat4 :=
+    let vp : Mat4 :=
+        mat4_mul (mat4_perspective 1.0 (800.0 / 600.0) 0.1 100.0)
+                 (mat4_look_at (vec3 0.0 0.0 5.0) (vec3 0.0 0.0 0.0) (vec3 0.0 1.0 0.0)) in
+    match mat4_inverse vp {
+        Option.some inv => inv,
+        Option.none => mat4_identity
+    }
+
+#[test]
+def test_screen_to_ray_center_looks_down_the_view_axis : Bool :=
+    let r : Ray := screen_to_ray pick_inverse 800.0 600.0 400.0 300.0 in
+    f64_abs r.direction.x < 0.0001 && f64_abs r.direction.y < 0.0001
+        && r.direction.z < (0.0 - 0.9999)
+        && f64_abs (r.origin.z - 4.9) < 0.0001
+
+#[test]
+def test_screen_to_ray_corners_diverge : Bool :=
+    // Top-left pixel: left of and above the axis (y is DOWN on screen).
+    let tl : Ray := screen_to_ray pick_inverse 800.0 600.0 0.0 0.0 in
+    let br : Ray := screen_to_ray pick_inverse 800.0 600.0 800.0 600.0 in
+    tl.direction.x < 0.0 && tl.direction.y > 0.0
+        && br.direction.x > 0.0 && br.direction.y < 0.0
+        && f64_abs (v3_length tl.direction - 1.0) < 0.0001
+
+#[test]
+def test_screen_to_ray_center_picks_a_box_at_the_origin : Bool :=
+    let r : Ray := screen_to_ray pick_inverse 800.0 600.0 400.0 300.0 in
+    // near plane at z = 4.9, box face at z = 1.
+    hit_is (ray_aabb_hit r (aabb (vec3 -1.0 -1.0 -1.0) (vec3 1.0 1.0 1.0))) 3.9
