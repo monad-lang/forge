@@ -64,8 +64,12 @@ cube spinning on top, above a checkered floor:
 
 | Input | Effect |
 |---|---|
-| `W` `A` `S` `D` or the arrow keys | slide the cube hierarchy across the floor |
+| `W` `A` `S` `D` or the arrow keys | slide the cube hierarchy across the floor, relative to the camera |
 | `Shift` (held) | move faster |
+| right-drag or middle-drag | orbit the camera |
+| `Q` / `E` | orbit left / right |
+| `R` / `F` | orbit up / down |
+| mouse wheel | zoom |
 | click | pick the mesh under the cursor (shown bottom left) |
 
 If WebGL is unavailable, the page shows the error in a red box at the top
@@ -101,12 +105,15 @@ Copy the shape of `motes/forge-app/src/main.mo`:
    `input_button_pressed`, `input_wheel_delta` and so on. Keys use physical
    `KeyboardEvent.code` names (`"KeyW"`, `"ArrowLeft"`, `"Space"`). Read the
    frame time with `time_delta (world_time world)`.
+   For an orbit camera, call `app_add_orbit_camera app (orbit_new target yaw
+   pitch distance fovy)`. To steer relative to the view, use
+   `orbit_forward` / `orbit_right` of `world_orbit_opt world`.
 3. Export the three thunks the web loader calls, delegating to
    `forge_app::web`:
 
    ```
    #[export "c"]
-   def oak_mount : IO Unit := web_mount my_app my_rig
+   def oak_mount : IO Unit := web_mount my_app my_rig   // e.g. orbit_rig my_orbit
 
    #[export "c"]
    def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler

@@ -23,7 +23,7 @@ pub use lib::app {
     app_set_renderer, app_set_camera, app_set_clear_color, app_set_initial_world,
     app_set_frames, app_add_plugin, app_add_system,
     app_assets, app_fixed_delta, app_set_assets, app_set_fixed_delta,
-    Frame, frame_world, frame_commands, app_frame, app_frame_dt, app_frame_input, app_plan,
+    Frame, frame_world, frame_commands, app_frame, app_frame_dt, app_frame_input, app_frame_viewed, app_plan,
     app_step, app_run, demo_app, spawn_one
 }
 
@@ -37,4 +37,13 @@ pub use lib::input {
     input_pointer_x, input_pointer_y, input_delta_x, input_delta_y, input_wheel_delta,
     input_pointer_inside, input_held_keys, input_axis,
     input_name, world_input, world_input_opt, world_set_input
+}
+
+pub use lib::orbit {
+    Orbit, orbit_new, orbit_with_limits, orbit_target, orbit_yaw, orbit_pitch, orbit_distance,
+    orbit_eye, orbit_forward, orbit_right, orbit_rig, orbit_update,
+    orbit_drag_speed, orbit_key_speed, orbit_zoom_speed, orbit_max_pitch,
+    orbit_name, camera_rig_name, world_orbit_opt, world_set_orbit,
+    world_camera_rig_opt, world_camera_rig, world_set_camera_rig,
+    orbit_step, orbit_system, app_add_orbit_camera
 }

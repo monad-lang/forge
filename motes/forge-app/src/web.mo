@@ -48,8 +48,9 @@ use forge_webgl {
 }
 use lib::app {
     App, CameraRig, rig_camera, Frame, frame_world, app_set_camera, app_initial_world,
-    app_assets, app_frame_input, app_plan
+    app_assets, app_frame_viewed, app_plan
 }
+use lib::orbit {world_camera_rig}
 use lib::input {
     Input, InputEvent, input_empty, input_apply, input_end_frame,
     input_key_down, input_key_up, input_pointer_move, input_pointer_down, input_pointer_up,
@@ -141,6 +142,8 @@ def listen_input (canvas : Node) : IO Unit := do {
     let _ <- Dom.on canvas "pointerdown" web_input_handler;
     let _ <- Dom.on canvas "pointerup" web_input_handler;
     let _ <- Dom.on canvas "pointerleave" web_input_handler;
+    // Right-drag orbits the camera: no context menu on the canvas.
+    let _ <- Dom.on_with canvas "contextmenu" (String.concat spec ":d");
     Dom.on_with canvas "wheel" (String.concat spec ":d")
 }
 
@@ -177,10 +180,18 @@ def event_y : IO F64 := do {
 def camera_for (rig : CameraRig) (size : Size2) : Camera :=
     rig_camera rig (size_width size) (size_height size)
 
+/// The rig to view `world` with: the one a system published there (an
+/// orbit camera), else the one `web_mount` was given.
+def rig_for (st : WebState) (world : World) : CameraRig := world_camera_rig world st.rig
+
+def view_of (st : WebState) (size : Size2) (world : World) : Camera :=
+    camera_for (rig_for st world) size
+
 def frame_with (cell : Ref WebState) (st : WebState) (now : F64) (size : Size2) : IO Unit := do {
-    let a : App := app_set_camera st.app (camera_for st.rig size);
-    let f : Frame := app_frame_input a st.world st.input (web_dt st.last_ms now);
-    let plan : FramePlan := app_plan a f;
+    // The camera is taken from the world AFTER the systems ran, so an orbit
+    // camera's move is drawn the frame it happens.
+    let f : Frame := app_frame_viewed st.app st.world st.input (web_dt st.last_ms now) (view_of st size);
+    let plan : FramePlan := app_plan st.app f;
     let _ <- webgl_submit st.renderer plan;
     Ref.set cell (web_state st.app st.renderer st.rig (frame_world f) now
                     (I64.add st.frames 1) st.picked (input_end_frame st.input))
@@ -214,7 +225,7 @@ def picked_id (o : Option Picked) : I64 :=
 
 /// The entity id under canvas point `(x, y)` (CSS pixels), or -1.
 pub def web_pick_at (st : WebState) (size : Size2) (x : F64) (y : F64) : I64 :=
-    let cam : Camera := camera_for st.rig size in
+    let cam : Camera := camera_for (rig_for st st.world) size in
     match camera_screen_ray cam (size_width size) (size_height size) x y {
         Option.none => 0 - 1,
         Option.some r => picked_id (pick_entity st.world (app_assets st.app) r)

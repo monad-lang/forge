@@ -52,6 +52,8 @@ commit. Run `monad update` when starting work. If `git_commit` in
 - Write `==` and `+`, not `I64.beq`/`String.beq`/`I64.add`. Negate with
   `Bool.not (e)`; there is no prefix `!` (G10).
 - `List.get idx list` takes the index first.
+- No field access on a call result (`(f x).field` is "unknown variable
+  'field'", G11). Bind it with `let`, or use a getter.
 - An unresolved `use` is only a warning (G4). Read `check` output for
   "unresolved module". Don't import types from transitive dependencies
   such as `web_event` (G9).

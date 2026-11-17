@@ -17,9 +17,11 @@
 //   - the floor image arrives: it is uploaded once and the floor draw binds it;
 //   - picking: a click at the centre picks an entity, the empty top-left
 //     corner picks nothing (`data-picked`);
-//   - input: holding KeyD (a `window` keydown) moves the root cube +x by
-//     speed * dt in the next frame; after keyup it stays put; Space's
-//     default (page scroll) is prevented; pointer and wheel events dispatch;
+//   - input: holding KeyD (a `window` keydown) moves the root cube along
+//     the camera's right by speed * dt in the next frame; after keyup it
+//     stays put; Space's default (page scroll) is prevented;
+//   - orbit camera: an idle frame repeats exactly; a right-drag and the
+//     wheel each change the view; the canvas suppresses its context menu;
 //   - context loss: a lost frame draws nothing; the frame after restore
 //     relinks both programs, re-uploads all meshes, and draws again.
 
@@ -146,17 +148,40 @@ if (canvas.attrs['data-picked'] !== '-1') fail(`an empty-corner click picked ${c
 // The root cube sits at the origin with identity rotation about x/z, so its
 // model matrix's translation is exactly the root's position.
 const near = (a, b) => Math.abs(a - b) < 1e-5;
-const rootAt = (calls, x) =>
-  calls.some((c) => c[0] === 'uniformMatrix4fv' && near(c[3][12], x) && near(c[3][13], 0) && near(c[3][14], 0));
+const rootAt = (calls, x, z) =>
+  calls.some((c) => c[0] === 'uniformMatrix4fv' && near(c[3][12], x) && near(c[3][13], 0) && near(c[3][14], z));
+// The demo's orbit starts at yaw 0.4636; the camera's right is (cos, 0, -sin).
+const yaw = 0.4636;
+const movedX = 0.625 * Math.cos(yaw);
+const movedZ = -0.625 * Math.sin(yaw);
 const f4 = frame(1048);
-if (!rootAt(f4, 0)) fail('before input: no model matrix at the origin');
+if (!rootAt(f4, 0, 0)) fail('before input: no model matrix at the origin');
 window.fire('keydown', { code: 'KeyD', key: 'd' });
 // dt clamps to 0.25 s; the demo moves 2.5 units/s.
 const f5 = frame(1298);
-if (!rootAt(f5, 0.625)) fail('holding KeyD did not move the root cube to x=0.625');
+if (!rootAt(f5, movedX, movedZ)) fail('holding KeyD did not move the root cube along the camera right');
 window.fire('keyup', { code: 'KeyD', key: 'd' });
 const f6 = frame(1548);
-if (!rootAt(f6, 0.625)) fail('after keyup the root cube kept moving');
+if (!rootAt(f6, movedX, movedZ)) fail('after keyup the root cube kept moving');
+
+// Orbit camera. Frames at the same timestamp have dt = 0, so nothing but
+// the camera can change the matrices.
+const mats = (calls) => JSON.stringify(calls.filter((c) => c[0] === 'uniformMatrix4fv').map((c) => c[3]));
+const idleA = mats(frame(1548));
+const idleB = mats(frame(1548));
+if (idleA !== idleB) fail('an idle frame changed the matrices');
+canvas.fire('pointermove', { offsetX: 100, offsetY: 100, pointerType: 'mouse' });
+canvas.fire('pointerdown', { offsetX: 100, offsetY: 100, button: 2, buttons: 2, pointerType: 'mouse' });
+canvas.fire('pointermove', { offsetX: 200, offsetY: 100, buttons: 2, pointerType: 'mouse' });
+const dragged = mats(frame(1548));
+if (dragged === idleB) fail('a right-drag did not move the camera');
+canvas.fire('pointerup', { offsetX: 200, offsetY: 100, button: 2, buttons: 0, pointerType: 'mouse' });
+const still = mats(frame(1548));
+if (still !== dragged) fail('the camera kept moving after the drag ended');
+canvas.fire('wheel', { deltaY: 100, deltaMode: 0 });
+if (mats(frame(1548)) === still) fail('the wheel did not zoom');
+const menu = canvas.fire('contextmenu', { button: 2 });
+if (!menu.defaultPrevented) fail('the canvas context menu was not suppressed');
 const space = window.fire('keydown', { code: 'Space', key: ' ' });
 if (!space.defaultPrevented) fail('Space did not have its default (scroll) prevented');
 window.fire('keyup', { code: 'Space', key: ' ' });
@@ -179,4 +204,4 @@ if (count(back, 'linkProgram') !== 2) fail(`restore relinked ${count(back, 'link
 if (count(back, 'bufferData') !== 8) fail(`restore re-uploaded ${count(back, 'bufferData')} buffers, want 8`);
 if (count(back, 'drawElements') !== 4) fail(`the restored frame drew ${count(back, 'drawElements')}, want 4`);
 
-console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), keyboard move, loss + restore`);
+console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), keyboard move, orbit camera, loss + restore`);

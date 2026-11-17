@@ -350,6 +350,7 @@ forge/
             ├── app.mo            # App, app_frame / app_frame_dt, CameraRig
             ├── plugin.mo
             ├── input.mo          # Input: keyboard/pointer state as a world resource
+            ├── orbit.mo          # Orbit camera driven by Input; CameraRig resource
             ├── web.mo            # forge_app::web: browser frame driver (web-only)
             ├── main.mo           # demo bin
             └── tests/app_tests.mo
@@ -805,6 +806,17 @@ As built (2026-11-17):
    and reads only the fields each event kind carries. The demo moves its
    hierarchy with WASD/arrows; the smoke asserts the move through the real
    loader.
+9. **Orbit camera** (2026-11-18). `forge_app::orbit` (native, 11 tests):
+   `Orbit {target, yaw, pitch, distance}` updated from `Input`
+   (secondary/middle drag and Q/E/R/F rotate, the wheel zooms, pitch and
+   distance clamped); `app_add_orbit_camera` adds the system, which
+   publishes `"forge.orbit"` and a `"forge.camera_rig"` resource.
+   `app_frame_viewed` extracts with a camera chosen from the world AFTER the
+   systems ran, so the web host draws and picks with the published rig (its
+   `web_mount` rig until then) and a camera move shows the same frame. The
+   canvas suppresses its context menu. The demo's WASD is camera-relative
+   (`orbit_forward`/`orbit_right`); the smoke asserts that and that a drag
+   and the wheel change the view while an idle frame repeats exactly.
 8. **Browser run.** `scripts/web-serve.sh` builds into `target/web/` (via
    `scripts/web-build.sh`, shared with the smoke) with `web/index.html` and
    a generated checker `forge-floor.png`, and serves it on localhost.
@@ -849,6 +861,7 @@ Recorded in full, with repros and the workarounds above, in
 | G8 | no `I64` -> `F64` in `init` | `f64_of_i64` in forge-math |
 | G9 | `web_event`'s `WebEvent` cannot be named through `web_wasm`; trying breaks field access | one `WebEvent.current` getter per field in `forge_app::web` |
 | G10 | no prefix `!` on `Bool` (misleading "expected '('") | `Bool.not` |
+| G11 | no field access on a call result: `(f x).yaw` is "unknown variable 'yaw'" | bind with `let`, or a getter |
 
 ## TDD approach
 
@@ -900,4 +913,5 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 8: forge-render (`RenderCommand` enum, `extract`, `Renderer` enum + soft/headless backends; 29 tests). The core knows no backend.
 - [x] Phase 9a: WebGL backend (`app_frame`/`app_frame_dt`, `MeshData`/`Assets`/`frame_plan`, wasm-only `forge-webgl`, `forge_app::web` driver, picking, parity + stub-GL smoke); browser check outstanding
 - [x] Deviations closed: `AppWorld`/`FallibleWorld`, fixed timestep in the loop, linear transform propagation, memoized `Memo`
+- [x] Orbit camera: `forge_app::orbit` (`Orbit`, `app_add_orbit_camera`, `CameraRig` resource), `app_frame_viewed`; camera-relative demo movement
 - [x] Web input: `forge_app::input` (`Input` resource, `app_frame_input`) + keyboard/pointer/wheel listeners in `forge_app::web`; demo WASD movement; browser run setup (`scripts/web-serve.sh`, `web/`, README.md)

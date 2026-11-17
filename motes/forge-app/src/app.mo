@@ -204,6 +204,16 @@ pub def app_frame_dt (a : App) (world : World) (dt : F64) : Frame :=
 pub def app_frame_input (a : App) (world : World) (input : Input) (dt : F64) : Frame :=
     app_frame_dt a (world_set_input world input) dt
 
+/// `app_frame_input`, but the camera is chosen from the world AFTER the
+/// systems ran (`view`), so a camera-driving system's move is drawn the same
+/// frame. The web host passes the published `CameraRig` at the canvas size.
+pub def app_frame_viewed (a : App) (world : World) (input : Input) (dt : F64)
+    (view : World -> Camera) : Frame :=
+    let after : World :=
+        propagate_transforms
+            (run_frame (propagate_transforms (world_set_input world input)) a.schedule a.fixed_delta dt) in
+    { world := after, commands := extract after (view after) a.clear : Frame }
+
 /// Resolve a frame against the app's assets: what a drawing backend executes.
 pub def app_plan (a : App) (f : Frame) : FramePlan := frame_plan a.assets f.commands
 
@@ -403,3 +413,26 @@ def test_a_system_reads_the_frames_input : Bool :=
     let off : Frame := app_frame_input a empty_world input_empty 0.016 in
     // the input resource is itself a singleton entity, the clock another
     world_entity_count (frame_world on) == world_entity_count (frame_world off) + 1
+
+def far_camera (w : World) : Camera :=
+    camera_new mat4_identity mat4_identity (vec3 0.0 0.0 (f64_of_world w))
+
+def f64_of_world (w : World) : F64 := if world_entity_count w > 0 then 9.0 else 1.0
+
+#[test]
+def test_app_frame_viewed_picks_the_camera_after_systems : Bool :=
+    let a : App := app_add_system app_new "spawn" update_s spawn_one in
+    let f : Frame := app_frame_viewed a empty_world input_empty 0.016 far_camera in
+    match List.get 1 (frame_commands f) {
+        Option.some c =>
+            match c {
+                RenderCommand.set_camera_cmd cam0 =>
+                    let cam : Camera := cam0 in
+                    let p : Vec3 := camera_position cam in
+                    p.z == 9.0,
+                RenderCommand.clear_cmd _ => false,
+                RenderCommand.draw_mesh_cmd _ _ _ => false,
+                RenderCommand.present_cmd => false
+            },
+        Option.none => false
+    }

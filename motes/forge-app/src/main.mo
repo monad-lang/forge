@@ -11,8 +11,10 @@
 //       └ small cube          on top of the cylinder
 //   floor quad                1.5 below, textured `forge-floor.png` if served
 //
-// WASD or the arrow keys slide the whole hierarchy across the floor (hold
-// Shift to go faster): a system reading `world_input`. Clicking a mesh
+// WASD or the arrow keys slide the whole hierarchy across the floor,
+// relative to the camera (hold Shift to go faster): a system reading
+// `world_input`. The camera is an orbit camera (`forge_app::orbit`):
+// right- or middle-drag or Q/E/R/F rotate, the wheel zooms. Clicking a mesh
 // records its entity id in the canvas's `data-picked`.
 //
 // Run it in a browser: `devenv shell -- scripts/web-serve.sh`, then open
@@ -41,6 +43,9 @@ use lib::app {
     app_set_clear_color, CameraRig, camera_rig
 }
 use lib::input {Input, world_input, input_axis, input_key_held}
+use lib::orbit {
+    Orbit, orbit_new, orbit_rig, orbit_forward, orbit_right, world_orbit_opt, app_add_orbit_camera
+}
 use lib::web {web_mount, web_dispatch, web_tick}
 
 // ── Spin ────────────────────────────────────────────────────────────
@@ -102,14 +107,20 @@ def axis2 (i : Input) (neg : String) (pos : String) (neg2 : String) (pos2 : Stri
     let a : F64 := input_axis i neg pos + input_axis i neg2 pos2 in
     if a > 1.0 then 1.0 else if a < 0.0 - 1.0 then 0.0 - 1.0 else a
 
-/// This frame's move in world units: x from A/D, z from W/S (W is away
-/// from the camera, -z).
-def step_of (i : Input) (dt : F64) : Vec3 :=
+/// This frame's move in world units, relative to the camera: A/D along its
+/// right, W/S along its facing (both on the ground plane).
+def step_of (o : Orbit) (i : Input) (dt : F64) : Vec3 :=
     let fast : Bool := input_key_held i "ShiftLeft" || input_key_held i "ShiftRight" in
     let speed : F64 := if fast then 6.0 else 2.5 in
-    v3_scale (vec3 (axis2 i "KeyA" "KeyD" "ArrowLeft" "ArrowRight") 0.0
-                     (axis2 i "KeyW" "KeyS" "ArrowUp" "ArrowDown"))
-               (speed * dt)
+    v3_scale (v3_add (v3_scale (orbit_right o) (axis2 i "KeyA" "KeyD" "ArrowLeft" "ArrowRight"))
+                     (v3_scale (orbit_forward o) (axis2 i "KeyS" "KeyW" "ArrowDown" "ArrowUp")))
+             (speed * dt)
+
+def view_orbit (world : World) : Orbit :=
+    match world_orbit_opt world {
+        Option.some o => o,
+        Option.none => start_orbit
+    }
 
 def move_by (world : World) (e : Entity) (step : Vec3) : World :=
     match entity_transform world e {
@@ -128,7 +139,7 @@ def move_go (world : World) (step : Vec3) (es : List Entity) : World :=
     }
 
 def move_all (world : World) : World :=
-    move_go world (step_of (world_input world) (time_delta (world_time world)))
+    move_go world (step_of (view_orbit world) (world_input world) (time_delta (world_time world)))
         (query_entities world [player_name, transform_name] [])
 
 def move_system : WorldM Id Unit := WorldM.modify move_all
@@ -205,13 +216,18 @@ def demo : App :=
     app_set_clear_color
         (app_set_initial_world
             (app_set_assets
-                (app_add_system (app_add_system app_new "spin" update_s spin_system)
-                    "move" update_s move_system)
+                (app_add_orbit_camera
+                    (app_add_system (app_add_system app_new "spin" update_s spin_system)
+                        "move" update_s move_system)
+                    start_orbit)
                 l.assets)
             (scene l.handles))
         (color 0.08 0.09 0.12 1.0)
 
-def rig : CameraRig := camera_rig (vec3 4.0 3.5 7.0) (vec3 0.5 0.0 0.0) 0.9
+/// Where the camera starts: about (4, 3.5, 7) looking at (0.5, 0, 0).
+def start_orbit : Orbit := orbit_new (vec3 0.5 0.0 0.0) 0.4636 0.4205 8.573 0.9
+
+def rig : CameraRig := orbit_rig start_orbit
 
 #[export "c"]
 def oak_mount : IO Unit := web_mount demo rig
