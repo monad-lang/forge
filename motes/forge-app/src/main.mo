@@ -11,14 +11,12 @@
 //       └ small cube          on top of the cylinder
 //   floor quad                1.5 below, textured `forge-floor.png` if served
 //
-// Clicking a mesh records its entity id in the canvas's `data-picked`.
+// WASD or the arrow keys slide the whole hierarchy across the floor (hold
+// Shift to go faster): a system reading `world_input`. Clicking a mesh
+// records its entity id in the canvas's `data-picked`.
 //
-// Build and serve (see scripts/web-smoke.sh for the stub-GL check):
-//
-//     monad build --target wasm32-unknown-unknown motes/forge-app --bin forge-app-web \
-//         -o "$PWD/target/web/app.wasm"
-//     # plus web.js / web_runtime.js / float_format.js from a monad checkout
-//     # and an index.html calling `start('./app.wasm', '#app')`.
+// Run it in a browser: `devenv shell -- scripts/web-serve.sh`, then open
+// http://localhost:8080 (README.md, "Run the demo in a browser").
 
 use std::derive {}
 use init::copy {Copy}
@@ -26,12 +24,12 @@ use init::id {Id}
 use forge_core::ecs {World, Entity, Spawned, empty_world, insert_component, get_component_named}
 use forge_core::query {query_entities}
 use forge_core::world_m {WorldM, WorldM.modify}
-use forge_math {Vec3, vec3, Quat, quat_from_axis_angle, f64_half_pi}
+use forge_math {Vec3, vec3, v3_add, v3_scale, Quat, quat_from_axis_angle, f64_half_pi}
 use forge_scene {
     Transform, transform_new, transform_from_translation, transform_name,
     spawn_transform, spawn_transform_child, entity_transform
 }
-use forge_schedule {update_s, world_time, time_elapsed}
+use forge_schedule {update_s, world_time, time_elapsed, time_delta}
 use forge_render {
     color, color_rgb, Assets, assets_empty, MeshAdded, MaterialAdded, TextureAdded,
     assets_add_mesh, assets_add_material, assets_add_texture, mesh_cube, mesh_box,
@@ -42,6 +40,7 @@ use lib::app {
     App, app_new, app_add_system, app_set_assets, app_set_initial_world,
     app_set_clear_color, CameraRig, camera_rig
 }
+use lib::input {Input, world_input, input_axis, input_key_held}
 use lib::web {web_mount, web_dispatch, web_tick}
 
 // ── Spin ────────────────────────────────────────────────────────────
@@ -87,6 +86,52 @@ def spin_all (world : World) : World :=
     spin_go world (time_elapsed (world_time world)) (query_entities world [spin_name, transform_name] [])
 
 def spin_system : WorldM Id Unit := WorldM.modify spin_all
+
+// ── Move ────────────────────────────────────────────────────────────
+
+/// Tags the entity the keyboard drives. `Copy`.
+#[derive Copy Clone]
+struct Player {
+    speed : F64
+}
+
+def player_name : String := "demo.player"
+
+/// Either key of a pair: WASD and the arrows both work.
+def axis2 (i : Input) (neg : String) (pos : String) (neg2 : String) (pos2 : String) : F64 :=
+    let a : F64 := input_axis i neg pos + input_axis i neg2 pos2 in
+    if a > 1.0 then 1.0 else if a < 0.0 - 1.0 then 0.0 - 1.0 else a
+
+/// This frame's move in world units: x from A/D, z from W/S (W is away
+/// from the camera, -z).
+def step_of (i : Input) (dt : F64) : Vec3 :=
+    let fast : Bool := input_key_held i "ShiftLeft" || input_key_held i "ShiftRight" in
+    let speed : F64 := if fast then 6.0 else 2.5 in
+    v3_scale (vec3 (axis2 i "KeyA" "KeyD" "ArrowLeft" "ArrowRight") 0.0
+                     (axis2 i "KeyW" "KeyS" "ArrowUp" "ArrowDown"))
+               (speed * dt)
+
+def move_by (world : World) (e : Entity) (step : Vec3) : World :=
+    match entity_transform world e {
+        Option.none => world,
+        Option.some t0 =>
+            let t : Transform := t0 in
+            insert_component world e transform_name
+                (Any.any (transform_new (v3_add t.translation step) t.rotation t.scale))
+    }
+
+#[terminating]
+def move_go (world : World) (step : Vec3) (es : List Entity) : World :=
+    match es {
+        List.empty => world,
+        List.cons e rest => move_go (move_by world e step) step rest
+    }
+
+def move_all (world : World) : World :=
+    move_go world (step_of (world_input world) (time_delta (world_time world)))
+        (query_entities world [player_name, transform_name] [])
+
+def move_system : WorldM Id Unit := WorldM.modify move_all
 
 // ── Assets ──────────────────────────────────────────────────────────
 
@@ -136,9 +181,14 @@ def with_spin (world : World) (e : Entity) (speed : F64) : World :=
     let s : Spin := { speed := speed : Spin } in
     insert_component world e spin_name (Any.any s)
 
+def as_player (world : World) (e : Entity) : World :=
+    let p : Player := { speed := 1.0 : Player } in
+    insert_component world e player_name (Any.any p)
+
 def scene (h : Handles) : World :=
     let root : Spawned := spawn_transform empty_world (transform_from_translation (vec3 0.0 0.0 0.0)) in
-    let w1 : World := with_spin (set_mesh root.world root.entity (mesh_component h.cube h.red)) root.entity 0.8 in
+    let w0 : World := as_player root.world root.entity in
+    let w1 : World := with_spin (set_mesh w0 root.entity (mesh_component h.cube h.red)) root.entity 0.8 in
     let arm : Spawned := spawn_transform_child w1 (transform_from_translation (vec3 2.0 0.0 0.0)) root.entity in
     let w2 : World := set_mesh arm.world arm.entity (mesh_component h.cylinder h.teal) in
     let top : Spawned := spawn_transform_child w2 (transform_from_translation (vec3 0.0 0.8 0.0)) arm.entity in
@@ -154,7 +204,10 @@ def demo : App :=
     let l : Loaded := load in
     app_set_clear_color
         (app_set_initial_world
-            (app_set_assets (app_add_system app_new "spin" update_s spin_system) l.assets)
+            (app_set_assets
+                (app_add_system (app_add_system app_new "spin" update_s spin_system)
+                    "move" update_s move_system)
+                l.assets)
             (scene l.handles))
         (color 0.08 0.09 0.12 1.0)
 

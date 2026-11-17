@@ -349,11 +349,15 @@ forge/
             ├── lib.mo
             ├── app.mo            # App, app_frame / app_frame_dt, CameraRig
             ├── plugin.mo
+            ├── input.mo          # Input: keyboard/pointer state as a world resource
             ├── web.mo            # forge_app::web: browser frame driver (web-only)
             ├── main.mo           # demo bin
             └── tests/app_tests.mo
-scripts/web-smoke.sh               # wasm build + stub-GL smoke
+scripts/web-build.sh               # wasm build + host JS into target/web
+scripts/web-serve.sh               # build + serve for a browser (README.md)
+scripts/web-smoke.sh               # build + stub-GL smoke in Node
 tests/web/forge_webgl_smoke.mjs
+web/                               # index.html + floor texture for the demo
 ```
 
 Each mote depends on `forge-core` (and its own extra deps) via `path`.
@@ -384,6 +388,10 @@ forge-app 15 (8 `app`, 2 `plugin`, 5 cross-module). `ecs.mo` alone also reports 
 42, forge-scene 15, forge-reactive 35, forge-render 60, forge-app 22.
 `scripts/web-smoke.sh`: the demo builds for `wasm32-unknown-unknown` and
 passes the stub-GL smoke in webgl2, webgl1 and no-WebGL modes.
+After web input (same day): forge-app **37/37** (+14 `input.mo`, +1
+`app_frame_input`), so 327 in all; the other motes are unchanged. The
+smoke also asserts the keyboard move, and `scripts/web-serve.sh` serves
+`app.wasm` as `application/wasm`.
 
 **`monad check` is not the gate.** Of the failures that had to be fixed here,
 one (`monad check`) was a type error; the other three type-checked and only
@@ -784,8 +792,26 @@ As built (2026-11-17):
    runs `tests/web/forge_webgl_smoke.mjs` over monad's `stub_dom`/`stub_gl`
    in webgl2, webgl1 and no-WebGL modes.
 
+7. **Input** (2026-11-17, after 9a). `forge_app::input` (native, tested):
+   a pure `Input` (held / pressed / released keys by physical
+   `KeyboardEvent.code`, pointer position and per-frame motion, buttons,
+   wheel) folded from `InputEvent`s with `input_apply` and cleared per frame
+   with `input_end_frame`; installed in the world as the `"forge.input"`
+   singleton resource by `app_frame_input`, read by systems with
+   `world_input`. `forge_app::web` registers one handler id for
+   `keydown`/`keyup`/`blur` on `window` and
+   `pointermove`/`pointerdown`/`pointerup`/`pointerleave`/`wheel` (no page
+   scroll) on the canvas, prevents the scroll default for Space and arrows,
+   and reads only the fields each event kind carries. The demo moves its
+   hierarchy with WASD/arrows; the smoke asserts the move through the real
+   loader.
+8. **Browser run.** `scripts/web-serve.sh` builds into `target/web/` (via
+   `scripts/web-build.sh`, shared with the smoke) with `web/index.html` and
+   a generated checker `forge-floor.png`, and serves it on localhost.
+   README.md has the instructions.
+
 **Not done:** a manual check in a real browser (no browser in this
-environment).
+environment); `scripts/web-serve.sh` is the way to do it.
 
 ## What is deferred
 
@@ -795,8 +821,9 @@ environment).
 - **UI (P9)**: retained-mode tree + flexbox — deferred (depends on rendering).
 - **Input/Window (P6)**: native OS bindings — deferred; the `Renderer`
   interface already carries `resize`, and the web path has canvas resize
-  (`webgl_resize`) and click picking (`forge_app::web`). Keyboard and
-  pointer-move input for games is the next web-side piece.
+  (`webgl_resize`), click picking and keyboard/pointer/wheel input
+  (`forge_app::input` + `forge_app::web`). Gamepad, touch gestures and
+  pointer lock are not done.
 - **Fiber-executed batches / per-reader event cursors**: still metadata
   (`stage_batches`) and a single queue; both need a consumer first.
 - **`DefaultPlugins`**: nothing to register yet.
@@ -820,6 +847,8 @@ Recorded in full, with repros and the workarounds above, in
 | G6 | the web loader contract is oak-named and single-app (`Keep`) | forge exports `oak_mount`/`oak_dispatch_event`/a no-op `oak_tick` |
 | G7 | web host JS and stubs are not shipped to consumers; the loader generator and the wasm build need undocumented env | `scripts/web-smoke.sh` reads them from a monad checkout at the pin; `devenv.nix` sets `MONAD_WEB_CC` |
 | G8 | no `I64` -> `F64` in `init` | `f64_of_i64` in forge-math |
+| G9 | `web_event`'s `WebEvent` cannot be named through `web_wasm`; trying breaks field access | one `WebEvent.current` getter per field in `forge_app::web` |
+| G10 | no prefix `!` on `Bool` (misleading "expected '('") | `Bool.not` |
 
 ## TDD approach
 
@@ -838,6 +867,7 @@ externs); it is gated by a wasm build plus the stub-GL smoke:
 
 ```bash
 devenv shell -- scripts/web-smoke.sh     # needs a monad checkout (MONAD_SRC, default ../monad)
+devenv shell -- scripts/web-serve.sh     # same build, served at http://localhost:8080
 ```
 
 The dev shell sets `MONAD_WEB_CC` to `clang-unwrapped`: nix's wrapped clang
@@ -863,3 +893,4 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 8: forge-render (`RenderCommand` enum, `extract`, `Renderer` enum + soft/headless backends; 29 tests). The core knows no backend.
 - [x] Phase 9a: WebGL backend (`app_frame`/`app_frame_dt`, `MeshData`/`Assets`/`frame_plan`, wasm-only `forge-webgl`, `forge_app::web` driver, picking, parity + stub-GL smoke); browser check outstanding
 - [x] Deviations closed: `AppWorld`/`FallibleWorld`, fixed timestep in the loop, linear transform propagation, memoized `Memo`
+- [x] Web input: `forge_app::input` (`Input` resource, `app_frame_input`) + keyboard/pointer/wheel listeners in `forge_app::web`; demo WASD movement; browser run setup (`scripts/web-serve.sh`, `web/`, README.md)

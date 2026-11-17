@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forge demo</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #14171f; color: #d8dbe2;
+                 font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+    /* forge's web host mounts a full-size <canvas id="forge"> into #app. */
+    #app { position: fixed; inset: 0; }
+    /* Pointer events, not touch scrolling/zooming, on the canvas. */
+    #forge { touch-action: none; outline: none; }
+    /* A setup failure (no WebGL, a shader error) lands in #forge-status. */
+    #forge-status { position: fixed; top: 1rem; left: 1rem; padding: .5rem .75rem;
+                    background: #5a1d1d; border-radius: 6px; }
+    #hud { position: fixed; left: 1rem; bottom: 1rem; padding: .5rem .75rem;
+           background: rgba(0, 0, 0, .45); border-radius: 6px; pointer-events: none; }
+    #hud kbd { font: 12px ui-monospace, monospace; padding: 0 .3em;
+               border: 1px solid #555; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows: move
+    &nbsp;·&nbsp; <kbd>Shift</kbd>: faster
+    &nbsp;·&nbsp; click: pick &nbsp;<span id="picked">picked: none</span>
+  </div>
+  <noscript>The forge demo needs JavaScript and WebAssembly.</noscript>
+  <script type="module">
+    import { start } from './web.js';
+    const picked = document.getElementById('picked');
+    // The host records each click's pick as the canvas's data-picked (-1: none).
+    const watch = () => {
+      const canvas = document.getElementById('forge');
+      if (!canvas) return;
+      new MutationObserver(() => {
+        const id = canvas.getAttribute('data-picked');
+        picked.textContent = 'picked: ' + (id === '-1' ? 'none' : 'entity ' + id);
+      }).observe(canvas, { attributes: true, attributeFilter: ['data-picked'] });
+    };
+    start('./app.wasm', '#app').then(watch).catch((err) => {
+      document.getElementById('app').textContent = 'Could not load the forge demo: ' + err;
+    });
+  </script>
+</body>
+</html>

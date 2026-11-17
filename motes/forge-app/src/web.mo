@@ -36,8 +36,8 @@
 use std::ref {Ref, Ref.new, Ref.get, Ref.set}
 use init::copy {Copy}
 use web_wasm::types {Node}
-use web_wasm::dom {Dom.on, Dom.on_frame, Dom.root, Dom.create, Dom.set_attr, Dom.append, Dom.text_node}
-use web_wasm::event {WebEvent.current}
+use web_wasm::dom {Dom.on, Dom.on_with, Dom.on_window, Dom.on_frame, Dom.root, Dom.create, Dom.set_attr, Dom.append, Dom.text_node}
+use web_wasm::event {WebEvent.current, WebEvent.prevent_default}
 use web_wasm::keep {Keep.save, Keep.load}
 use web_wasm::console {Console.log}
 use forge_core::ecs {World, Entity, entity_id}
@@ -48,7 +48,12 @@ use forge_webgl {
 }
 use lib::app {
     App, CameraRig, rig_camera, Frame, frame_world, app_set_camera, app_initial_world,
-    app_assets, app_frame_dt, app_plan
+    app_assets, app_frame_input, app_plan
+}
+use lib::input {
+    Input, InputEvent, input_empty, input_apply, input_end_frame,
+    input_key_down, input_key_up, input_pointer_move, input_pointer_down, input_pointer_up,
+    input_pointer_leave, input_wheel, input_focus_lost, input_wheel_pixels, input_is_scroll_key
 }
 
 pub use forge_webgl {
@@ -60,6 +65,10 @@ pub use forge_webgl {
 pub def web_frame_handler : I64 := 1
 
 pub def web_click_handler : I64 := 2
+
+/// Every input listener (keys and focus on `window`, pointer and wheel on
+/// the canvas) shares this id; the event's kind says which it was.
+pub def web_input_handler : I64 := 3
 
 /// The longest step one frame may take, in seconds.
 pub def web_max_dt : F64 := 0.25
@@ -73,7 +82,8 @@ pub struct WebState {
     world : World,
     last_ms : F64,
     frames : I64,
-    picked : I64
+    picked : I64,
+    input : Input
 }
 
 pub instance Copy WebState {
@@ -81,9 +91,9 @@ pub instance Copy WebState {
 }
 
 def web_state (app : App) (renderer : WebGlRenderer) (rig : CameraRig) (world : World)
-    (last_ms : F64) (frames : I64) (picked : I64) : WebState :=
+    (last_ms : F64) (frames : I64) (picked : I64) (input : Input) : WebState :=
     { app := app, renderer := renderer, rig := rig, world := world, last_ms := last_ms,
-      frames := frames, picked := picked
+      frames := frames, picked := picked, input := input
       : WebState }
 
 /// Frame `dt` in seconds from two rAF timestamps in milliseconds (0 on the
@@ -111,11 +121,27 @@ def report (text : String) : IO Unit := do {
 // ── Mount ───────────────────────────────────────────────────────────
 
 def mounted (a : App) (rig : CameraRig) (r : WebGlRenderer) : IO Unit := do {
-    let st : WebState := web_state a r rig (app_initial_world a) (0.0 - 1.0) 0 (0 - 1);
+    let st : WebState := web_state a r rig (app_initial_world a) (0.0 - 1.0) 0 (0 - 1) input_empty;
     let cell <- Ref.new st;
     let _ <- Keep.save cell;
     let _ <- Dom.on_frame (I64.to_string web_frame_handler);
-    Dom.on (webgl_canvas r) "click" web_click_handler
+    let _ <- Dom.on (webgl_canvas r) "click" web_click_handler;
+    listen_input (webgl_canvas r)
+}
+
+/// Keys and focus loss on `window` (the canvas need not have focus);
+/// pointer and wheel on the canvas. The wheel listener prevents the page
+/// from scrolling under the canvas (`d`).
+def listen_input (canvas : Node) : IO Unit := do {
+    let spec : String := I64.to_string web_input_handler;
+    let _ <- Dom.on_window "keydown" spec;
+    let _ <- Dom.on_window "keyup" spec;
+    let _ <- Dom.on_window "blur" spec;
+    let _ <- Dom.on canvas "pointermove" web_input_handler;
+    let _ <- Dom.on canvas "pointerdown" web_input_handler;
+    let _ <- Dom.on canvas "pointerup" web_input_handler;
+    let _ <- Dom.on canvas "pointerleave" web_input_handler;
+    Dom.on_with canvas "wheel" (String.concat spec ":d")
 }
 
 /// Create a full-size canvas, bring up WebGL with the app's assets, and
@@ -153,11 +179,11 @@ def camera_for (rig : CameraRig) (size : Size2) : Camera :=
 
 def frame_with (cell : Ref WebState) (st : WebState) (now : F64) (size : Size2) : IO Unit := do {
     let a : App := app_set_camera st.app (camera_for st.rig size);
-    let f : Frame := app_frame_dt a st.world (web_dt st.last_ms now);
+    let f : Frame := app_frame_input a st.world st.input (web_dt st.last_ms now);
     let plan : FramePlan := app_plan a f;
     let _ <- webgl_submit st.renderer plan;
     Ref.set cell (web_state st.app st.renderer st.rig (frame_world f) now
-                    (I64.add st.frames 1) st.picked)
+                    (I64.add st.frames 1) st.picked (input_end_frame st.input))
 }
 
 /// One animation frame.
@@ -197,7 +223,7 @@ pub def web_pick_at (st : WebState) (size : Size2) (x : F64) (y : F64) : I64 :=
 def click_with (cell : Ref WebState) (st : WebState) (size : Size2) (x : F64) (y : F64) : IO Unit := do {
     let id : I64 := web_pick_at st size x y;
     let _ <- Dom.set_attr (webgl_canvas st.renderer) "data-picked" (I64.to_string id);
-    Ref.set cell (web_state st.app st.renderer st.rig st.world st.last_ms st.frames id)
+    Ref.set cell (web_state st.app st.renderer st.rig st.world st.last_ms st.frames id st.input)
 }
 
 /// A click on the canvas: pick, record the id on the state and as the
@@ -222,12 +248,107 @@ pub def web_last_pick : IO I64 := do {
     IO.pure st.picked
 }
 
+// ── Input ───────────────────────────────────────────────────────────
+//
+// `WebEvent.current` is a snapshot whose binder is affine (gap G3), so each
+// field is read by its own one-use getter, and only the fields the event's
+// kind carries are read.
+
+def event_kind : IO String := do {
+    let e <- WebEvent.current;
+    IO.pure e.kind
+}
+
+def event_code : IO String := do {
+    let e <- WebEvent.current;
+    IO.pure e.code
+}
+
+def event_button : IO I64 := do {
+    let e <- WebEvent.current;
+    IO.pure e.button
+}
+
+def event_delta_y : IO F64 := do {
+    let e <- WebEvent.current;
+    IO.pure e.delta_y
+}
+
+def event_delta_mode : IO I64 := do {
+    let e <- WebEvent.current;
+    IO.pure e.delta_mode
+}
+
+def key_event (down : Bool) : IO (Option InputEvent) := do {
+    let code <- event_code;
+    let _ <- if input_is_scroll_key code then WebEvent.prevent_default else IO.pure unit;
+    IO.pure (Option.some (if down then input_key_down code else input_key_up code))
+}
+
+def move_event : IO (Option InputEvent) := do {
+    let x <- event_x;
+    let y <- event_y;
+    IO.pure (Option.some (input_pointer_move x y))
+}
+
+def button_event (down : Bool) : IO (Option InputEvent) := do {
+    let b <- event_button;
+    let x <- event_x;
+    let y <- event_y;
+    IO.pure (Option.some (if down then input_pointer_down b x y else input_pointer_up b x y))
+}
+
+def wheel_event : IO (Option InputEvent) := do {
+    let dy <- event_delta_y;
+    let mode <- event_delta_mode;
+    IO.pure (Option.some (input_wheel (input_wheel_pixels dy mode)))
+}
+
+/// The model event for the browser event in flight, if forge reads it.
+def read_input_event (k : String) : IO (Option InputEvent) :=
+    if k == "keydown" then key_event true
+    else if k == "keyup" then key_event false
+    else if k == "blur" then IO.pure (Option.some input_focus_lost)
+    else if k == "pointermove" then move_event
+    else if k == "pointerdown" then button_event true
+    else if k == "pointerup" then button_event false
+    else if k == "pointerleave" then IO.pure (Option.some input_pointer_leave)
+    else if k == "wheel" then wheel_event
+    else IO.pure Option.none
+
+def input_with (cell : Ref WebState) (st : WebState) (ev : InputEvent) : IO Unit :=
+    Ref.set cell (web_state st.app st.renderer st.rig st.world st.last_ms st.frames st.picked
+                    (input_apply st.input ev))
+
+def input_from (cell : Ref WebState) (st : WebState) (o : Option InputEvent) : IO Unit :=
+    match o {
+        Option.none => IO.pure unit,
+        Option.some ev => input_with cell st ev,
+    }
+
+/// An input event: fold it into the state the next frame installs.
+pub def web_input : IO Unit := do {
+    let k <- event_kind;
+    let o <- read_input_event k;
+    let cell <- load_state;
+    let st <- Ref.get cell;
+    input_from cell st o
+}
+
+/// The input the next frame will see.
+pub def web_current_input : IO Input := do {
+    let cell <- load_state;
+    let st <- Ref.get cell;
+    IO.pure st.input
+}
+
 // ── Export bodies ───────────────────────────────────────────────────
 
 /// The `oak_dispatch_event` body: route a handler id.
 pub def web_dispatch (handler : I64) : IO Unit :=
     if I64.beq handler web_frame_handler then web_frame
     else if I64.beq handler web_click_handler then web_click
+    else if handler == web_input_handler then web_input
     else IO.pure unit
 
 /// The `oak_tick` body. Frames arrive as dispatches (the loader calls the

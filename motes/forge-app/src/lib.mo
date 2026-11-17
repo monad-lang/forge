@@ -23,6 +23,18 @@ pub use lib::app {
     app_set_renderer, app_set_camera, app_set_clear_color, app_set_initial_world,
     app_set_frames, app_add_plugin, app_add_system,
     app_assets, app_fixed_delta, app_set_assets, app_set_fixed_delta,
-    Frame, frame_world, frame_commands, app_frame, app_frame_dt, app_plan,
+    Frame, frame_world, frame_commands, app_frame, app_frame_dt, app_frame_input, app_plan,
     app_step, app_run, demo_app, spawn_one
+}
+
+pub use lib::input {
+    Input, InputEvent, input_empty, input_apply, input_apply_all, input_end_frame,
+    input_key_down, input_key_up, input_pointer_move, input_pointer_down, input_pointer_up,
+    input_pointer_leave, input_wheel, input_focus_lost, input_wheel_pixels, input_is_scroll_key,
+    button_primary, button_middle, button_secondary,
+    input_key_held, input_key_pressed, input_key_released,
+    input_button_held, input_button_pressed, input_button_released,
+    input_pointer_x, input_pointer_y, input_delta_x, input_delta_y, input_wheel_delta,
+    input_pointer_inside, input_held_keys, input_axis,
+    input_name, world_input, world_input_opt, world_set_input
 }

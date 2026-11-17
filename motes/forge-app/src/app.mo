@@ -52,6 +52,7 @@ use forge_math {
 }
 use forge_scene {propagate_transforms}
 use lib::plugin {Plugin, plugin_named, plugin_name, plugin_setup}
+use lib::input {Input, world_set_input, world_input, input_key_held, input_empty, input_apply, input_key_down}
 
 /// A default camera at the origin looking down -z.
 pub def default_camera : Camera :=
@@ -196,6 +197,12 @@ pub def app_frame (a : App) (world : World) : Frame :=
 /// read the clock with `world_time`.
 pub def app_frame_dt (a : App) (world : World) (dt : F64) : Frame :=
     frame_of a (run_frame (propagate_transforms world) a.schedule a.fixed_delta dt)
+
+/// One frame with this frame's input installed: `world_set_input`, then
+/// `app_frame_dt`. Systems read it with `world_input`. The host calls
+/// `input_end_frame` on its copy afterwards.
+pub def app_frame_input (a : App) (world : World) (input : Input) (dt : F64) : Frame :=
+    app_frame_dt a (world_set_input world input) dt
 
 /// Resolve a frame against the app's assets: what a drawing backend executes.
 pub def app_plan (a : App) (f : Frame) : FramePlan := frame_plan a.assets f.commands
@@ -381,3 +388,18 @@ def test_rig_camera_survives_a_zero_height : Bool :=
     let c : Camera := rig_camera rig 800.0 0.0 in
     let p : Mat4 := camera_projection c in
     p.cx.x > 0.0
+
+/// Spawns one entity per frame while "KeyW" is held: a system reading input.
+def spawn_on_w_pure (w : World) : World :=
+    if input_key_held (world_input w) "KeyW" then spawn_pos w else w
+
+def spawn_on_w : WorldM Id Unit := WorldM.modify spawn_on_w_pure
+
+#[test]
+def test_a_system_reads_the_frames_input : Bool :=
+    let a : App := app_add_system app_new "w" update_s spawn_on_w in
+    let held : Input := input_apply input_empty (input_key_down "KeyW") in
+    let on : Frame := app_frame_input a empty_world held 0.016 in
+    let off : Frame := app_frame_input a empty_world input_empty 0.016 in
+    // the input resource is itself a singleton entity, the clock another
+    world_entity_count (frame_world on) == world_entity_count (frame_world off) + 1

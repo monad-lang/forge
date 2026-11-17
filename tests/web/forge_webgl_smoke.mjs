@@ -17,6 +17,9 @@
 //   - the floor image arrives: it is uploaded once and the floor draw binds it;
 //   - picking: a click at the centre picks an entity, the empty top-left
 //     corner picks nothing (`data-picked`);
+//   - input: holding KeyD (a `window` keydown) moves the root cube +x by
+//     speed * dt in the next frame; after keyup it stays put; Space's
+//     default (page scroll) is prevented; pointer and wheel events dispatch;
 //   - context loss: a lost frame draws nothing; the frame after restore
 //     relinks both programs, re-uploads all meshes, and draws again.
 
@@ -139,14 +142,41 @@ if (centre === undefined || Number(centre) < 0) fail(`a centre click picked ${JS
 canvas.fire('click', { offsetX: 1, offsetY: 1 });
 if (canvas.attrs['data-picked'] !== '-1') fail(`an empty-corner click picked ${canvas.attrs['data-picked']}`);
 
+// ── input ──
+// The root cube sits at the origin with identity rotation about x/z, so its
+// model matrix's translation is exactly the root's position.
+const near = (a, b) => Math.abs(a - b) < 1e-5;
+const rootAt = (calls, x) =>
+  calls.some((c) => c[0] === 'uniformMatrix4fv' && near(c[3][12], x) && near(c[3][13], 0) && near(c[3][14], 0));
+const f4 = frame(1048);
+if (!rootAt(f4, 0)) fail('before input: no model matrix at the origin');
+window.fire('keydown', { code: 'KeyD', key: 'd' });
+// dt clamps to 0.25 s; the demo moves 2.5 units/s.
+const f5 = frame(1298);
+if (!rootAt(f5, 0.625)) fail('holding KeyD did not move the root cube to x=0.625');
+window.fire('keyup', { code: 'KeyD', key: 'd' });
+const f6 = frame(1548);
+if (!rootAt(f6, 0.625)) fail('after keyup the root cube kept moving');
+const space = window.fire('keydown', { code: 'Space', key: ' ' });
+if (!space.defaultPrevented) fail('Space did not have its default (scroll) prevented');
+window.fire('keyup', { code: 'Space', key: ' ' });
+canvas.fire('pointermove', { offsetX: 10, offsetY: 10, pointerType: 'mouse' });
+canvas.fire('pointerdown', { offsetX: 12, offsetY: 10, button: 0, buttons: 1, pointerType: 'mouse' });
+canvas.fire('pointerup', { offsetX: 12, offsetY: 10, button: 0, buttons: 0, pointerType: 'mouse' });
+canvas.fire('wheel', { deltaY: 3, deltaMode: 1 });
+canvas.fire('pointerleave', { offsetX: 0, offsetY: 0, pointerType: 'mouse' });
+window.fire('blur', {});
+const f7 = frame(1564);
+if (count(f7, 'drawElements') !== 4) fail(`the frame after input events drew ${count(f7, 'drawElements')}`);
+
 // ── context loss and restore ──
 glStub.lost = true;
-const lostFrame = frame(1048);
+const lostFrame = frame(1580);
 if (count(lostFrame, 'drawElements') !== 0) fail('a lost context was drawn to');
 glStub.lost = false;
-const back = frame(1064);
+const back = frame(1596);
 if (count(back, 'linkProgram') !== 2) fail(`restore relinked ${count(back, 'linkProgram')} programs, want 2`);
 if (count(back, 'bufferData') !== 8) fail(`restore re-uploaded ${count(back, 'bufferData')} buffers, want 8`);
 if (count(back, 'drawElements') !== 4) fail(`the restored frame drew ${count(back, 'drawElements')}, want 4`);
 
-console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), loss + restore`);
+console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), keyboard move, loss + restore`);
