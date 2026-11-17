@@ -14,12 +14,11 @@ renderer, and a WebGL backend. A game depends only on `forge_app`. See
 - The `monad` toolchain on `PATH`.
 - For the browser demo:
   - a **monad checkout** next to this repo (`../monad`, or point
-    `MONAD_SRC` at it) that has commit
-    `77ed946875f6804b025bb73035d367a2074a00e2`, the `web_wasm` rev pinned
-    in `mote.toml`. The web host JavaScript is not shipped with the
+    `MONAD_SRC` at it) that has the `web_wasm` commit pinned in
+    `mote.lock` (`git_commit`). The web host JavaScript is not shipped with the
     toolchain, so the build copies it from that checkout. The checkout's
-    web files must match the pin (`git checkout 77ed9468` there if the
-    build says they differ);
+    web files must match the pin (check out that rev there if the build
+    says they differ);
   - `python3`, to serve the page. Any static file server works;
   - a browser with WebGL 1 or 2.
 
@@ -33,6 +32,19 @@ devenv shell -- monad test -w      # native tests for every mote
 Run these from the repo root. Member-scoped commands such as
 `monad test motes/forge-app` fail to find the git dependency's lock (see
 PLAN.md, gap G2).
+
+## Keeping the monad pin current
+
+`mote.toml` tracks the monad repo's `main` (the `web_wasm` git
+dependency), and `mote.lock` records the exact commit. Keep it current:
+
+```sh
+devenv shell -- monad update     # move mote.lock to upstream main's head
+```
+
+If the commit changed, check it out in the monad checkout
+(`git_commit` in `mote.lock`), run `monad test -w` and
+`scripts/web-smoke.sh`, and commit `mote.lock`.
 
 ## Run the demo in a browser
 

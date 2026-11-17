@@ -4,9 +4,9 @@ version = 1
 [[mote]]
 name = "web_wasm"
 version = "0.1.0"
-source = "git+https://github.com/monad-lang/monad.git?rev=77ed946875f6804b025bb73035d367a2074a00e2&subdir=motes/web_wasm#77ed946875f6804b025bb73035d367a2074a00e2"
+source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/web_wasm#77ed946875f6804b025bb73035d367a2074a00e2"
 git_url = "https://github.com/monad-lang/monad.git"
-git_ref = "rev:77ed946875f6804b025bb73035d367a2074a00e2"
+git_ref = "branch:main"
 git_commit = "77ed946875f6804b025bb73035d367a2074a00e2"
 git_subdir = "motes/web_wasm"
 checksum = "sha256:4e7afd747cd69f9405132235b2e0cce8752ecf3d28d2b455305e55ab0b9cf093"

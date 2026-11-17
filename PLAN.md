@@ -870,6 +870,13 @@ devenv shell -- scripts/web-smoke.sh     # needs a monad checkout (MONAD_SRC, de
 devenv shell -- scripts/web-serve.sh     # same build, served at http://localhost:8080
 ```
 
+**Keep the monad pin current.** `mote.toml` tracks `branch = "main"` of
+`https://github.com/monad-lang/monad.git` for `web_wasm`; `mote.lock`
+holds the exact commit. `monad update` moves it to upstream's head; then
+check that commit out in `../monad` and re-run the gates above. Checked
+2026-11-17: upstream main is `77ed9468` (the newer commits in the private
+fork are typechecker/proofs only).
+
 The dev shell sets `MONAD_WEB_CC` to `clang-unwrapped`: nix's wrapped clang
 injects hardening and glibc linker flags the wasm target rejects. A
 member-scoped build cannot see the workspace's lock (gap G2), so the script

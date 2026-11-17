@@ -16,7 +16,7 @@ out="$root/target/web"
 
 "$root/scripts/web-build.sh"
 
-rev="$(sed -n 's/^rev = "\([0-9a-f]*\)"$/\1/p' "$root/mote.toml" | head -n 1)"
+rev="$(sed -n 's/^git_commit = "\([0-9a-f]*\)"$/\1/p' "$root/mote.lock" | head -n 1)"
 mkdir -p "$out/smoke"
 for f in stub_dom.mjs stub_gl.mjs; do
     git -C "$monad_src" show "${rev}:wasm/web/smoke/$f" > "$out/smoke/$f"

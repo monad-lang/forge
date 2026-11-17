@@ -33,9 +33,10 @@ path = "motes/forge-webgl"
 # dependency because it lives in the monad repository, not this one, and is
 # not part of the installed toolchain's unpacked `init`/`std`/`runtime`.
 #
-# `rev` pins a commit, not a moving branch, so the same checkout is used
-# until this line changes; `monad fetch` records it in `mote.lock`. `subdir`
-# names the mote inside a repository that holds many.
+# `branch = "main"` follows upstream; the exact commit is recorded in
+# `mote.lock` (`git_commit`), so builds are reproducible until
+# `monad update` moves it. `subdir` names the mote inside a repository that
+# holds many.
 #
 # NOTE: `web_wasm`'s own manifest inherits `init`/`std` from the monad
 # workspace root ABOVE it in the checkout, so those resolve to the
@@ -44,5 +45,6 @@ path = "motes/forge-webgl"
 # dependency, and a native `monad check`/`test` never sees a second `init`.
 [workspace.dependencies.web_wasm]
 git = "https://github.com/monad-lang/monad.git"
-rev = "77ed946875f6804b025bb73035d367a2074a00e2"
+# Keep current: `monad update` (README.md, "Keeping the monad pin current").
+branch = "main"
 subdir = "motes/web_wasm"
