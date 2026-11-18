@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mo Venture</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #8fc7f5; color: #fff;
+                 font: 15px/1.4 system-ui, sans-serif; overflow: hidden; }
+    #app { position: fixed; inset: 0; }
+    #forge { touch-action: none; outline: none; }
+    #forge-status { position: fixed; top: 1rem; left: 1rem; padding: .5rem .75rem;
+                    background: #5a1d1d; border-radius: 6px; }
+    .panel { position: fixed; padding: .45rem .8rem; background: rgba(10, 20, 40, .55);
+             border-radius: 8px; pointer-events: none; }
+    #title { top: 1rem; left: 1rem; font-weight: 700; letter-spacing: .04em; }
+    #stats { top: 1rem; right: 1rem; display: flex; gap: 1.1rem; font-variant-numeric: tabular-nums; }
+    #stats b { color: #ffe066; }
+    #message { top: 38%; left: 50%; transform: translate(-50%, -50%); font-size: 2.4rem;
+               font-weight: 800; background: none; text-shadow: 0 2px 6px rgba(0,0,0,.5); }
+    #help { left: 1rem; bottom: 1rem; font-size: 13px; }
+    #help kbd { font: 12px ui-monospace, monospace; padding: 0 .3em; border: 1px solid #9ab;
+                border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="title" class="panel">Mo Venture</div>
+  <div id="stats" class="panel">
+    <span>sparks <b id="sparks">0/20</b></span>
+    <span>time <b id="time">0.0</b></span>
+    <span>falls <b id="falls">0</b></span>
+  </div>
+  <div id="message" class="panel"></div>
+  <div id="help" class="panel">
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows: run
+    &nbsp;·&nbsp; <kbd>Space</kbd>: jump (hold for height)
+    &nbsp;·&nbsp; <kbd>Shift</kbd>: sprint / air dash
+    &nbsp;·&nbsp; right-drag, <kbd>Q</kbd><kbd>E</kbd>: camera &nbsp;·&nbsp; wheel: zoom
+    &nbsp;·&nbsp; <kbd>P</kbd>: autopilot
+  </div>
+  <noscript>Mo Venture needs JavaScript and WebAssembly.</noscript>
+  <script type="module">
+    import { start } from './web.js';
+    // The game writes its HUD to the canvas as data-hud-* attributes.
+    const bind = () => {
+      const canvas = document.getElementById('forge');
+      if (!canvas) return;
+      const show = () => {
+        for (const key of ['sparks', 'time', 'falls', 'message']) {
+          const v = canvas.getAttribute('data-hud-' + key);
+          if (v !== null) document.getElementById(key).textContent = v;
+        }
+      };
+      new MutationObserver(show).observe(canvas, { attributes: true });
+      canvas.focus();
+    };
+    start('./app.wasm', '#app').then(bind).catch((err) => {
+      document.getElementById('app').textContent = 'Could not load Mo Venture: ' + err;
+    });
+  </script>
+</body>
+</html>

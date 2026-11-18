@@ -1,8 +1,9 @@
 # AGENTS.md
 
 Forge is a game engine written in Monad (`.mo`), set up as a workspace of
-motes in `motes/forge-*`. Read `README.md` for usage and `PLAN.md` for
-design, status and known toolchain gaps (G1–G10). Read the parts you need;
+motes in `motes/forge-*`, plus an example game in `games/mo-venture`. Read
+`README.md` for usage and `PLAN.md` for design, status and known toolchain
+gaps (G1–G12). Read the parts you need;
 don't read either file end to end.
 
 ## Commands
@@ -15,8 +16,8 @@ Run everything from the repo root, inside `devenv shell` (or prefix
 | typecheck all | `monad check -w` | ~5–10 min, run in background |
 | test all (the real gate) | `monad test -w` | ~10+ min, run in background |
 | one mote, fast | copy the lock in first (below) | ~2–3 min |
-| wasm build + Node smoke | `scripts/web-smoke.sh` | ~3 min |
-| serve the demo | `scripts/web-serve.sh` (port 8080) | |
+| wasm build + Node smoke | `scripts/web-smoke.sh [demo\|mo-venture]` | ~3 min per app |
+| serve the demo / the game | `scripts/web-serve.sh [mo-venture]` (port 8080) | |
 | update the monad pin | `monad update` | seconds |
 
 - **`monad check` passing is not enough.** Some failures only show up in
@@ -26,7 +27,15 @@ Run everything from the repo root, inside `devenv shell` (or prefix
   "web_wasm not in mote.lock" (G2). For a quick single-mote loop, copy the
   root lock into the mote for the duration of the command, then remove it,
   and never commit it:
-  `cp mote.lock motes/forge-app/mote.lock && cp mote.lock motes/forge-webgl/mote.lock; monad test motes/forge-app; rm -f motes/forge-{app,webgl}/mote.lock`
+  `for d in motes/forge-app motes/forge-webgl games/mo-venture; do cp mote.lock $d/mote.lock; done`,
+  run `monad test motes/forge-app` (or `games/mo-venture`), then
+  `rm -f motes/forge-app/mote.lock motes/forge-webgl/mote.lock games/mo-venture/mote.lock`.
+  Motes that don't reach `web_wasm` (forge-core, forge-math, forge-collide,
+  ...) test without the copies.
+- `games/mo-venture` compiles slowly (minutes per file); run its tests in
+  the background.
+- Don't put `rm` inside `bash -c '...'`: the harness blocks the whole
+  command. Run removals as their own command with explicit paths.
 - When polling a background job, don't `pkill -f 'monad ...'` or `pgrep`
   a pattern that matches your own shell's command line.
 
@@ -54,6 +63,9 @@ commit. Run `monad update` when starting work. If `git_commit` in
 - `List.get idx list` takes the index first.
 - No field access on a call result (`(f x).field` is "unknown variable
   'field'", G11). Bind it with `let`, or use a getter.
+- `pub use` re-exports work within a mote but not across motes (G12): a
+  game must depend on, and `use`, the mote that declares a type
+  (`use forge_math {Vec3}`), even if `forge_app` re-exports it.
 - An unresolved `use` is only a warning (G4). Read `check` output for
   "unresolved module". Don't import types from transitive dependencies
   such as `web_event` (G9).
@@ -69,7 +81,11 @@ commit. Run `monad update` when starting work. If `git_commit` in
   it there; the web side gets only thin glue.
 - Backend-neutral rendering decisions go in `forge-render`
   (`frame_plan`). `forge-webgl` only executes a `FramePlan`.
-- A game depends on `forge_app` only.
+- A game lives in `games/<name>`: game logic in native modules with tests,
+  a web bin `src/main.mo`. It builds its `App` with `forge_app` and names
+  engine types from their own motes (G12).
+- Collision is `forge-collide` (shapes, GJK/EPA, broad phase, queries,
+  events, `move_and_slide`). Its tests are the fast loop (~30 s).
 
 ## Shell
 

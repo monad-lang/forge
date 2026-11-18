@@ -9,7 +9,7 @@
 // Checks, in order:
 //   - mount: a <canvas id="forge"> exists; with no WebGL the failure is
 //     reported on the page and nothing else happens;
-//   - setup: two programs link, four meshes upload (vertex floats = 5 per
+//   - setup: two programs link, four meshes upload (vertex floats = 8 per
 //     vertex, 32-bit indices);
 //   - a frame: the frame plan's 4 draws become exactly 4 drawElements, with
 //     each mesh's index count, after viewport + clear; the floor texture is
@@ -84,8 +84,9 @@ const count = (calls, name) => calls.filter((c) => c[0] === name).length;
   const uploads = setup.filter((c) => c[0] === 'bufferData');
   if (uploads.length !== 8) fail(`setup made ${uploads.length} bufferData calls, want 8 (4 meshes)`);
   const vertexFloats = uploads.filter((c) => c[1] === 0x8892).map((c) => c[2].length).sort((a, b) => a - b);
-  // quad 4, box 24, cube 24, cylinder 4*24+4 = 100 vertices; 5 floats each.
-  const want = [20, 120, 120, 500];
+  // quad 4, box 24, cube 24, cylinder 4*24+4 = 100 vertices; 8 floats each
+  // (position, uv, normal).
+  const want = [32, 192, 192, 800];
   if (JSON.stringify(vertexFloats) !== JSON.stringify(want)) {
     fail(`vertex upload sizes ${JSON.stringify(vertexFloats)}, want ${JSON.stringify(want)}`);
   }

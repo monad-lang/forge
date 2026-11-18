@@ -7,10 +7,12 @@
 // (which reads its bounds).
 //
 // Layout, the one every backend relies on:
-//   vertices : x y z u v, repeated   (`mesh_stride` = 5 floats per vertex)
+//   vertices : x y z u v nx ny nz, repeated   (`mesh_stride` = 8 floats)
 //   indices  : three per triangle, COUNTER-CLOCKWISE seen from outside
 //
-// The builders (`mesh_quad`/`mesh_box`/`mesh_disc`/`mesh_cylinder`) are
+// The normal (unit, outward) comes after the uv so the uv keeps its offset.
+// The builders (`mesh_quad`/`mesh_box`/`mesh_disc`/`mesh_cylinder`/
+// `mesh_sphere`) are
 // centred on the origin. There is no integer->float conversion in the
 // toolchain, so a segment index becomes an angle through forge-math's
 // `f64_of_i64`.
@@ -18,10 +20,13 @@
 use std::derive {}
 use std::list {}
 use init::copy {Copy}
-use forge_math::{Vec3, vec3, AABB, aabb, f64_sin, f64_cos, f64_tau, f64_of_i64, f64_min, f64_max}
+use forge_math::{
+    Vec3, vec3, v3_sub, v3_cross, v3_normalize, AABB, aabb, f64_sin, f64_cos, f64_tau, f64_pi,
+    f64_of_i64, f64_min, f64_max
+}
 
-/// Floats per vertex: position (3) + uv (2).
-pub def mesh_stride : I64 := 5
+/// Floats per vertex: position (3) + uv (2) + normal (3).
+pub def mesh_stride : I64 := 8
 
 /// Interleaved vertices plus triangle indices. `Copy` is the hand-written
 /// identity: both fields are immutable lists, so a duplicate shares them.
@@ -88,13 +93,15 @@ pub def mesh_bounds (m : MeshData) : AABB :=
 
 // ── Builders ────────────────────────────────────────────────────────
 
-def vertex (p : Vec3) (u : F64) (v : F64) : List F64 := [p.x, p.y, p.z, u, v]
+def vertex (p : Vec3) (u : F64) (v : F64) (n : Vec3) : List F64 := [p.x, p.y, p.z, u, v, n.x, n.y, n.z]
 
-/// Four corners, counter-clockwise from the outside, with the unit uv square.
+/// Four corners, counter-clockwise from the outside, with the unit uv square
+/// and the face's outward normal.
 def face (a : Vec3) (b : Vec3) (c : Vec3) (d : Vec3) : List F64 :=
-    List.append (vertex a 0.0 0.0)
-        (List.append (vertex b 1.0 0.0)
-            (List.append (vertex c 1.0 1.0) (vertex d 0.0 1.0)))
+    let n : Vec3 := v3_normalize (v3_cross (v3_sub b a) (v3_sub c a)) in
+    List.append (vertex a 0.0 0.0 n)
+        (List.append (vertex b 1.0 0.0 n)
+            (List.append (vertex c 1.0 1.0 n) (vertex d 0.0 1.0 n)))
 
 /// Two triangles per quad, for `n` quads whose corners start at `base`.
 #[terminating]
@@ -136,16 +143,16 @@ pub def mesh_cube (half : F64) : MeshData := mesh_box half half half
 def clamp_segments (n : I64) : I64 := if I64.lt n 3 then 3 else n
 
 /// `n` ring vertices at height `y`, starting on +x and turning toward +z;
-/// the uv is the ring's own unit disc.
+/// the uv is the ring's own unit disc, the normal `(0, ny, 0)` (a cap's).
 #[terminating]
-def ring_go (r : F64) (y : F64) (step : F64) (n : I64) (i : I64) : List F64 :=
+def ring_go (r : F64) (y : F64) (ny : F64) (step : F64) (n : I64) (i : I64) : List F64 :=
     if I64.lt i n
     then
         let a : F64 := step * f64_of_i64 i in
         let c : F64 := f64_cos a in
         let s : F64 := f64_sin a in
-        List.append [r * c, y, r * s, 0.5 + 0.5 * c, 0.5 + 0.5 * s]
-                    (ring_go r y step n (I64.add i 1))
+        List.append [r * c, y, r * s, 0.5 + 0.5 * c, 0.5 + 0.5 * s, 0.0, ny, 0.0]
+                    (ring_go r y ny step n (I64.add i 1))
     else []
 
 /// A fan around `center` over the `n` ring vertices that follow it. `up`
@@ -165,7 +172,7 @@ pub def mesh_disc (radius : F64) (segments : I64) : MeshData :=
     let n : I64 := clamp_segments segments in
     let step : F64 := f64_tau / f64_of_i64 n in
     mesh_data
-        (List.append [0.0, 0.0, 0.0, 0.5, 0.5] (ring_go radius 0.0 step n 0))
+        (List.append [0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 1.0, 0.0] (ring_go radius 0.0 1.0 step n 0))
         (fan_go 0 n 0 true)
 
 /// The side wall's vertex columns: bottom then top, `n + 1` columns so the
@@ -179,7 +186,9 @@ def wall_go (r : F64) (half : F64) (step : F64) (n : I64) (i : I64) : List F64 :
         let x : F64 := r * f64_cos a in
         let z : F64 := r * f64_sin a in
         let u : F64 := f64_of_i64 i / f64_of_i64 n in
-        List.append [x, 0.0 - half, z, u, 0.0, x, half, z, u, 1.0]
+        let nx : F64 := f64_cos a in
+        let nz : F64 := f64_sin a in
+        List.append [x, 0.0 - half, z, u, 0.0, nx, 0.0, nz, x, half, z, u, 1.0, nx, 0.0, nz]
                     (wall_go r half step n (I64.add i 1))
 
 #[terminating]
@@ -200,13 +209,58 @@ pub def mesh_cylinder (radius : F64) (height : F64) (segments : I64) : MeshData 
     let half : F64 := height * 0.5 in
     let top_center : I64 := I64.mul (I64.add n 1) 2 in
     let bottom_center : I64 := I64.add (I64.add top_center 1) n in
-    let top : List F64 := List.append [0.0, half, 0.0, 0.5, 0.5] (ring_go radius half step n 0) in
+    let top : List F64 := List.append [0.0, half, 0.0, 0.5, 0.5, 0.0, 1.0, 0.0] (ring_go radius half 1.0 step n 0) in
     let bottom : List F64 :=
-        List.append [0.0, 0.0 - half, 0.0, 0.5, 0.5] (ring_go radius (0.0 - half) step n 0) in
+        List.append [0.0, 0.0 - half, 0.0, 0.5, 0.5, 0.0, 0.0 - 1.0, 0.0]
+                    (ring_go radius (0.0 - half) (0.0 - 1.0) step n 0) in
     mesh_data
         (List.append (wall_go radius half step n 0) (List.append top bottom))
         (List.append (wall_indices n 0)
             (List.append (fan_go top_center n 0 true) (fan_go bottom_center n 0 false)))
+
+/// One latitude row of a UV sphere: `segs + 1` vertices (the seam repeats
+/// with `u = 1`), normal = position / radius.
+#[terminating]
+def sphere_row (r : F64) (polar : F64) (v : F64) (segs : I64) (j : I64) : List F64 :=
+    if I64.lt segs j then []
+    else
+        let az : F64 := f64_tau * f64_of_i64 j / f64_of_i64 segs in
+        let sp : F64 := f64_sin polar in
+        let nx : F64 := sp * f64_cos az in
+        let ny : F64 := f64_cos polar in
+        let nz : F64 := sp * f64_sin az in
+        List.append [r * nx, r * ny, r * nz, f64_of_i64 j / f64_of_i64 segs, v, nx, ny, nz]
+                    (sphere_row r polar v segs (I64.add j 1))
+
+#[terminating]
+def sphere_rows (r : F64) (rings : I64) (segs : I64) (i : I64) : List F64 :=
+    if I64.lt rings i then []
+    else
+        let v : F64 := f64_of_i64 i / f64_of_i64 rings in
+        List.append (sphere_row r (f64_pi * v) v segs 0) (sphere_rows r rings segs (I64.add i 1))
+
+/// Two triangles per cell between row `i` and row `i + 1`, wound
+/// counter-clockwise from outside.
+#[terminating]
+def sphere_cells (rings : I64) (segs : I64) (i : I64) (j : I64) : List I64 :=
+    if I64.lt i rings
+    then
+        if I64.lt j segs
+        then
+            let w : I64 := I64.add segs 1 in
+            let a : I64 := I64.add (I64.mul i w) j in
+            let b : I64 := I64.add a w in
+            List.append [a, I64.add a 1, I64.add b 1, a, I64.add b 1, b]
+                        (sphere_cells rings segs i (I64.add j 1))
+        else sphere_cells rings segs (I64.add i 1) 0
+    else []
+
+/// A UV sphere of `radius`: `rings` latitude bands (at least 2) and
+/// `segments` longitude wedges (at least 3).
+pub def mesh_sphere (radius : F64) (rings : I64) (segments : I64) : MeshData :=
+    let nr : I64 := if I64.lt rings 2 then 2 else rings in
+    let ns : I64 := clamp_segments segments in
+    mesh_data (sphere_rows radius nr ns 0) (sphere_cells nr ns 0 0)
 
 // ── Tests ───────────────────────────────────────────────────────────
 
@@ -256,9 +310,29 @@ def test_cylinder_bounds : Bool :=
 
 #[test]
 def test_an_index_past_the_end_is_invalid : Bool :=
-    Bool.not (mesh_is_valid (mesh_data [0.0, 0.0, 0.0, 0.0, 0.0] [0, 1, 2]))
+    Bool.not (mesh_is_valid (mesh_data [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] [0, 1, 2]))
 
 #[test]
 def test_empty_mesh_bounds_are_degenerate : Bool :=
     let b : AABB := mesh_bounds (mesh_data [] []) in
     F64.beq b.min.x 0.0 && F64.beq b.max.x 0.0
+
+#[test]
+def test_sphere_counts : Bool :=
+    let m : MeshData := mesh_sphere 1.0 4 6 in
+    // (rings + 1) rows of (segments + 1); 2 triangles per cell.
+    I64.beq (mesh_vertex_count m) 35 && I64.beq (mesh_triangle_count m) 48 && mesh_is_valid m
+
+#[test]
+def test_sphere_bounds : Bool :=
+    let b : AABB := mesh_bounds (mesh_sphere 2.0 8 12) in
+    b.max.y > 1.9999 && b.min.y < (0.0 - 1.9999) && b.max.x > 1.99 && b.max.x < 2.0001
+
+#[test]
+def test_box_top_face_normal_points_up : Bool :=
+    // Vertex 16 starts the top face; its normal is floats 5..7.
+    let vs : List F64 := mesh_vertices (mesh_box 1.0 1.0 1.0) in
+    match List.get (I64.add (I64.mul 16 8) 6) vs {
+        Option.some ny => F64.beq ny 1.0,
+        Option.none => false
+    }

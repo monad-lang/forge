@@ -17,5 +17,5 @@ pub use lib::renderer {
 
 pub use lib::shaders {
     vertex_source, flat_fragment_source, textured_fragment_source,
-    vertex_stride_bytes, uv_offset_bytes
+    vertex_stride_bytes, uv_offset_bytes, normal_offset_bytes
 }

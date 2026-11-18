@@ -1,0 +1,15 @@
+[mote]
+name = "forge_collide"
+version = "0.1.0"
+edition = "2026"
+
+# Collision detection (Phase 10): shapes, narrow and broad phase, queries,
+# contact events and the kinematic character controller. Native and pure.
+[dependencies.forge_core]
+workspace = true
+
+[dependencies.forge_math]
+workspace = true
+
+[dependencies.forge_scene]
+workspace = true

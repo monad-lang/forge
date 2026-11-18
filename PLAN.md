@@ -277,7 +277,7 @@ Not here yet; GPU codegen is a future `forge-render` backend.
 
 ```
 forge/
-├── mote.toml                    # [workspace] members = ["motes/*"]
+├── mote.toml                    # [workspace] members = ["motes/*", "games/*"]
 ├── devenv.nix
 └── motes/
     ├── forge-core/               # ECS, WorldM transformer stack, commands, query
@@ -324,6 +324,18 @@ forge/
     │       ├── reactive.mo
     │       ├── event.mo
     │       └── tests/reactive_tests.mo
+    ├── forge-collide/            # collision detection (Phase 10)
+    │   ├── mote.toml
+    │   └── src/
+    │       ├── lib.mo
+    │       ├── shape.mo          # Pose, Shape (core + margin), Collider
+    │       ├── gjk.mo            # GJK distance, EPA penetration
+    │       ├── narrow.mo         # proximity / collide: closed forms + GJK/EPA
+    │       ├── world.mo          # Scene of posed colliders, sort-and-sweep broad phase
+    │       ├── query.mo          # raycast, overlap, penetrations, shape_cast
+    │       ├── controller.mo     # move_and_slide: kinematic character controller
+    │       ├── events.mo         # "forge.contacts": started / ended pairs
+    │       └── tests/{narrow,scene}_tests.mo
     ├── forge-render/             # backend-agnostic render interface + soft backend
     │   ├── mote.toml
     │   └── src/
@@ -350,14 +362,20 @@ forge/
             ├── app.mo            # App, app_frame / app_frame_dt, CameraRig
             ├── plugin.mo
             ├── input.mo          # Input: keyboard/pointer state as a world resource
-            ├── orbit.mo          # Orbit camera driven by Input; CameraRig resource
+            ├── orbit.mo          # Orbit camera driven by Input; follow; CameraRig resource
+            ├── hud.mo            # HUD key -> text resource, mirrored to data-hud-* on the web
+            ├── pick.mo           # world_pick: collider raycast, else mesh bounds
             ├── web.mo            # forge_app::web: browser frame driver (web-only)
             ├── main.mo           # demo bin
             └── tests/app_tests.mo
-scripts/web-build.sh               # wasm build + host JS into target/web
-scripts/web-serve.sh               # build + serve for a browser (README.md)
-scripts/web-smoke.sh               # build + stub-GL smoke in Node
-tests/web/forge_webgl_smoke.mjs
+games/
+└── mo-venture/                    # the example game (targets = ["web"]; bin mo-venture-web)
+    ├── src/{tune,level,mo,look,rules,controls,bot,game}.mo, main.mo, tests/
+    └── web/index.html
+scripts/web-build.sh [app]         # wasm build + host JS into target/web/<app>
+scripts/web-serve.sh [app]         # build + serve for a browser (README.md)
+scripts/web-smoke.sh [app]         # build + stub-GL smoke in Node, per app
+tests/web/forge_webgl_smoke.mjs, tests/web/mo_venture_smoke.mjs
 web/                               # index.html + floor texture for the demo
 ```
 
@@ -825,9 +843,233 @@ As built (2026-11-17):
 **Not done:** a manual check in a real browser (no browser in this
 environment); `scripts/web-serve.sh` is the way to do it.
 
+### Phase 10: forge-collide — collision detection (P7) — **done**
+
+As built (`motes/forge-collide`, 46 tests):
+
+- Shapes are a CORE (point, segment, box, hull) plus a MARGIN (radius), so
+  spheres and capsules are exact and a new convex shape needs only
+  `support_core`. A `Pose` is position + orthonormal axes, from the root's
+  `Transform` or a child's `GlobalTransform`; scale is ignored.
+- `proximity` (signed distance, normal A->B, surface points) uses closed
+  forms for planes, sphere/capsule pairs (segment-segment) and sphere-box;
+  everything else is GJK on the cores, then SAT for box-box and EPA for the
+  rest when the cores overlap. GJK/EPA agree with the closed forms to 1e-6
+  over a table of poses. **Deviation:** a contact is one point (the
+  deepest); the clipped 4-point box manifold is left for Phase 12.
+- Broad phase: merge sort on min x, then sweep; planes pair with all.
+  Equals brute force on a 25-shape scatter.
+- Queries: `raycast` (exact for sphere/box/plane, conservative advancement
+  for capsule/hull), `overlap`, `penetrations`, `shape_cast` (conservative
+  advancement; only obstacles the motion approaches count).
+- **Moved here from Phase 12:** the kinematic character controller,
+  `move_and_slide`: depenetrate, then horizontal and vertical passes of
+  cast-and-slide (up to 4 hits), stepping up to 0.3 against walls when
+  grounded, ground snap. Tested: lands, slides along walls, climbs a step,
+  refuses a 1.0 ledge, slides down a 60° slope, snaps down a small drop.
+- Contact events: `contacts_update` / `collision_system` diff the touching
+  pairs per frame into `"forge.contacts"` (current, started, ended).
+- Picking: `forge_app::pick::world_pick` raycasts colliders and falls back
+  to mesh bounds; the demo's meshes have box colliders.
+- **Budget, not met yet:** 200 densely touching colliders (~400 narrow
+  pairs) take 27 ms natively, above a 60 Hz frame. Mo Venture's scale
+  (about 50 colliders, few touching) is well inside. Optimise before Phase
+  12 (cheaper box-box, fewer `sqrt`, cached poses).
+- forge-math: `f64_sqrt` now rescales into [0.25, 4) before Newton
+  (`sqrt 0` was 6e-8, which broke every zero-length check).
+
+The original design follows.
+
+A new native mote, `motes/forge-collide` (deps: forge-core, forge-math,
+forge-scene). Pure functions over the `World`, tested natively. Physics
+(Phase 12) is its first consumer, but games use it on its own for
+triggers, overlap tests and ray queries.
+
+1. **Shapes and the `Collider` component.** `Shape` enum: `sphere r`,
+   `box half_extents` (oriented by the entity's `GlobalTransform`, so an
+   OBB), `capsule r half_height` (along local y), `plane normal d`
+   (static, infinite), `convex points` (a hull given as points).
+   `Collider {shape, offset : Transform, layer : I64, mask : I64,
+   is_trigger : Bool}` stored under `"forge.collider"`. Each shape has a
+   world-space AABB and a support function (`support shape xf dir : Vec3`).
+2. **Narrow phase.** `Contact {normal, depth, point_a, point_b}`. Closed
+   forms where they are cheap and exact: sphere–sphere, sphere–plane,
+   sphere–box, capsule–sphere, capsule–capsule (segment–segment), box–plane,
+   and box–box by SAT over 15 axes with a clipped manifold of up to 4
+   points. Every other pair goes through **GJK** (intersection and distance)
+   plus **EPA** (penetration depth and normal) on the support functions, so
+   any new convex shape only needs a support function. `collide a xa b xb :
+   Option Manifold`.
+3. **Broad phase.** Sort-and-sweep on x over world AABBs (`List.sort_by`),
+   O(n log n) per frame, with a layer/mask filter. A uniform grid is the
+   fallback if large flat scenes need it. The output is a list of candidate
+   pairs.
+4. **Queries.** `raycast world ray max_t mask : Option RayHit` (nearest:
+   entity, t, point, normal), `overlap world shape xf mask : List Entity`,
+   and `shape_cast` (a swept sphere or box, by conservative advancement on
+   GJK distance) for character movement. `forge-render`'s `pick_entity` can
+   move onto `raycast` once meshes get colliders.
+5. **Contact events.** A `collision_system` (update stage) writes this
+   frame's overlapping pairs to the `"forge.contacts"` resource. It diffs
+   them against the previous frame to emit `CollisionStarted` /
+   `CollisionEnded` (and trigger enter/exit), which systems read like
+   `Input`.
+6. **Tests.** Analytic cases for every closed-form pair (touching,
+   separated, deep, edge-on). GJK/EPA must agree with the closed forms
+   (within 1e-6) over a fixed table of poses. The broad phase must return
+   exactly the brute-force pair set. Raycasts get hit distances and
+   normals. Events get start/stay/end over three frames.
+7. **Demo and smoke.** Colliders on the demo meshes. Clicking uses
+   `raycast` instead of the render bounds. The moving cube can't pass
+   through a new static wall (a slide along the contact normal). The smoke
+   asserts the wall stops the move.
+
+Risks: F64 robustness in GJK/EPA (degenerate simplices, tolerance
+selection) and the cost of persistent lists in the broad phase. Budget: 200
+colliders at 60 Hz in wasm, checked with a bench before Phase 12 builds on
+it.
+
+### Mo Venture — the example game — **v1 done**
+
+`games/mo-venture`: a 3D platformer starring Mo, forge's acceptance test.
+Each engine phase lands with the game features that need it.
+
+- **v1 (on Phase 10).** The Skyway level as data (14 platforms, 20 sparks,
+  2 checkpoints, a goal). Mo is a capsule moved by `move_and_slide`, with
+  momentum, a variable-height jump, coyote time, jump buffering and one air
+  dash per jump. The camera is an orbit that follows Mo. Rules: sparks,
+  checkpoints, kill plane and respawn, goal, and a HUD through
+  `forge_app::hud`. An autopilot (`bot.mo`, P in the browser) runs the
+  level's landing spots the way a player does: it jumps where a downward
+  `raycast` just ahead finds no ground, or at a step up; it aims in the air
+  for the landing spot, and air-dashes at the apex over the dash gap.
+- **Engine work it pulled in:** vertex normals and a diffuse light in
+  forge-render/forge-webgl (stride 8), `mesh_sphere`, `orbit_follow`, the
+  HUD resource mirrored to `data-hud-*`, collider picking, and per-app web
+  scripts.
+- **Tests:** jump apex and short hop, coyote time, buffered jump, one dash
+  per airtime, run speed; every Skyway gap is under 80% of the simulated
+  jump (or dash) reach; formatting; bot playthroughs of a tiny level and the
+  whole Skyway (goal reached, no falls, both checkpoints, at least 15 of the
+  20 sparks: the bot's line passes over a few); determinism. 16 tests. The
+  smoke (`mo_venture_smoke.mjs`) runs and jumps by key and lets the
+  autopilot climb the stairs; it stays short because of G13.
+- **Blocked in the browser by G13:** the game allocates about 11 MB per
+  frame and the web target never frees, so it runs out of its 4 GB heap in
+  seconds. Native frame cost is also high (the Skyway playthrough takes
+  ~15 s natively); building the collision scene once per frame instead of
+  three times is the first saving.
+- **With Phase 11:** squash and stretch, a run cycle, spark pops, waving
+  flags, moving platforms that carry Mo (the controller's `ground` entity).
+- **With Phase 12:** pushable crates (one ledge needs a crate), bounce
+  pads, a seesaw on a hinge.
+
+### Phase 11: forge-animate — animation (P8) — planned
+
+A new native mote, `motes/forge-animate` (deps: forge-core, forge-math,
+forge-scene, forge-schedule).
+
+1. **Interpolation and easing.** `class Lerp A` with instances for `F64`,
+   `Vec3`, `Quat` (shortest-path `quat_slerp`) and `Color`. `Easing` enum:
+   linear, quad/cubic/quart in, out and in-out, sine, back, bounce, and
+   `step`. Easing is a pure `F64 -> F64` on [0,1] that is exact at the
+   endpoints.
+2. **Tweens.** `Tween A {from, to, duration, easing, elapsed}` plus a
+   `tween_system` driving a target field: translation, rotation, scale, or
+   a material tint override. This covers simple game feedback such as pops,
+   slides and fades.
+3. **Keyframe clips.** `Track A` holds keys `(time, value, easing)` sorted
+   by time, sampled by binary search with `track_sample : F64 -> A`. A `Clip`
+   is a set of channels (translation/rotation/scale tracks), each bound to
+   an entity: a child is addressed by a `Name` component (new, in
+   forge-scene) and resolved once at bind time. Clips live in `Assets` next
+   to meshes.
+4. **`Animator` component.** It holds the clip handle, time, speed, loop
+   mode (once, loop, ping-pong) and playing flag, plus an optional
+   crossfade to a second clip with a weight. `animate_system` (update
+   stage) advances by `time_delta` and writes `Transform`s. `app_frame`
+   already propagates after systems, so the pose is drawn the same frame.
+   Clip markers (named times) emit events to `"forge.anim_events"`.
+5. **Not in this phase:** skeletal skinning (bone weights in `MeshData`, a
+   joint-palette uniform in forge-webgl's vertex shader, glTF import). It
+   is 11b, after the CPU side is proven.
+6. **Tests.** Easing endpoints and monotonicity. Track sampling at, between
+   and outside keys. Loop wrap and ping-pong reflection. Slerp
+   shortest-path. The system's output is deterministic for a given dt
+   sequence, and crossfade weights sum to 1.
+7. **Demo and smoke.** The gold cube bobs on a looping clip, and picking
+   an entity plays a short "pop" tween. The smoke asserts that the cube's
+   model matrix follows the clip at known timestamps.
+
+### Phase 12: forge-physics — generic rigid-body physics (P11) — planned
+
+A new native mote, `motes/forge-physics` (deps: forge-collide plus the
+above). "Generic" means it isn't tied to one game or shape set: shapes come
+from forge-collide's support functions, and every interaction, contacts
+included, is a `Constraint`.
+
+1. **Bodies.** `RigidBody {kind : dynamic | kinematic | static,
+   inv_mass, inv_inertia_local (diagonal), velocity, angular_velocity,
+   restitution, friction, linear_damping, angular_damping, gravity_scale,
+   sleeping}`. Mass and inertia are derived from the collider's shape and a
+   density (`body_from_collider`). Forces and impulses are applied through
+   an `"forge.physics.commands"` buffer (`apply_force`, `apply_impulse_at`),
+   so gameplay systems don't touch solver state.
+2. **The step** (a `physics_system` in `fixed_update_s`, which already
+   runs once per `fixed_delta`):
+   1. integrate forces into velocities (semi-implicit Euler, gravity,
+      damping);
+   2. broad and narrow phase through forge-collide;
+   3. build and **persist contact manifolds** by pair key, for warm
+      starting;
+   4. run the **sequential-impulse solver** over all constraints for N
+      velocity iterations, with friction clamped to `mu * normal impulse`
+      and restitution above a velocity threshold;
+   5. integrate positions and orientations (quaternion integration plus
+      normalize);
+   6. run split-impulse / NGS position correction for penetration;
+   7. update islands and sleeping;
+   8. write `Transform`s.
+3. **`class Constraint`** with `prepare`, `solve_velocity` and
+   `solve_position`, and instances for contact, distance, ball-socket,
+   hinge (with limits and motor), fixed and slider. Joints are components
+   naming two entities.
+4. **Render interpolation.** Each body keeps its previous pose. The host
+   draws `lerp(prev, current, accumulator / fixed_delta)` so motion is
+   smooth at any frame rate. `Time.accumulator` already exists.
+5. **Determinism.** Everything is pure and fixed-step, so the same inputs
+   give identical worlds. That is the base the deferred rollback
+   networking (P12 in "What is deferred") needs. A test enforces it.
+6. **Character controller.** Done in Phase 10 (`move_and_slide`). Here it
+   gains pushing dynamic bodies through the command buffer.
+7. **2D.** The solver is written against small vector helpers, so a 2D
+   instantiation (`forge-physics2d`) is possible later. It isn't part of
+   this phase.
+8. **Tests.**
+   - Free fall within the semi-implicit Euler error bound.
+   - A box resting on a plane shows no visible drift or jitter after 600
+     steps.
+   - A 5-box stack stays standing.
+   - Restitution bounce heights.
+   - A box on an incline sticks or slides around `atan(mu)`.
+   - Elastic collisions conserve momentum.
+   - Distance and hinge joints hold within tolerance.
+   - Sleeping bodies wake on contact.
+   - Two runs are bit-identical.
+9. **Demo and smoke.** Click to drop a box or ball from above the cursor.
+   The bodies pile up on the floor and the hierarchy pushes them. The
+   smoke asserts that a dropped box comes to rest on the floor (y within
+   tolerance) after N frames.
+
+Risks: solver cost in wasm with persistent maps (warm-start lookups by
+pair key). Benchmark early: target 100 dynamic bodies at 60 Hz. There may
+also be F64 cost without fast `sqrt`/trig. Toolchain gaps apply (G1:
+keep the physics state out of monad stacks and pass worlds explicitly).
+
 ## What is deferred
 
-- **Physics (P11)**: GJK/EPA with F64 — deferred (solver complexity).
+- **Physics (P11)**: now planned as Phases 10 (collision) and 12 (physics).
+- **Skeletal animation (11b)**: skinning, bone weights, glTF import; after Phase 11.
 - **Audio (P10)**: native audio backend — deferred.
 - **Networking (P12)**: UDP transport + rollback — deferred.
 - **UI (P9)**: retained-mode tree + flexbox — deferred (depends on rendering).
@@ -862,6 +1104,8 @@ Recorded in full, with repros and the workarounds above, in
 | G9 | `web_event`'s `WebEvent` cannot be named through `web_wasm`; trying breaks field access | one `WebEvent.current` getter per field in `forge_app::web` |
 | G10 | no prefix `!` on `Bool` (misleading "expected '('") | `Bool.not` |
 | G11 | no field access on a call result: `(f x).yaw` is "unknown variable 'yaw'" | bind with `let`, or a getter |
+| G13 | **the web target has no GC**: `runtime/src/platform_web.c` is a bump allocator that never frees, so every frame's garbage stays. Measured: the demo 0.83 MB/frame (4 GB wasm heap gone in ~80 s at 60 Hz), Mo Venture 11 MB/frame (~6 s) | none in forge; needs a collector (or arena reset) in monad's web runtime. Native builds use Boehm and are fine |
+| G12 | a `pub use` re-export of another mote's item is not visible to consumers: `use forge_app {Vec3}` is "`Vec3` is not imported, declared in `forge_math::vec`" | a game also depends on the engine motes it names |
 
 ## TDD approach
 
@@ -914,4 +1158,8 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 9a: WebGL backend (`app_frame`/`app_frame_dt`, `MeshData`/`Assets`/`frame_plan`, wasm-only `forge-webgl`, `forge_app::web` driver, picking, parity + stub-GL smoke); browser check outstanding
 - [x] Deviations closed: `AppWorld`/`FallibleWorld`, fixed timestep in the loop, linear transform propagation, memoized `Memo`
 - [x] Orbit camera: `forge_app::orbit` (`Orbit`, `app_add_orbit_camera`, `CameraRig` resource), `app_frame_viewed`; camera-relative demo movement
+- [x] Phase 10: forge-collide (shapes, SAT + GJK/EPA narrow phase, sort-and-sweep broad phase, raycast/overlap/shape-cast, contact events, `move_and_slide`; 46 tests). 200-collider budget not met yet.
+- [x] Mo Venture v1 (`games/mo-venture`): Skyway level, Mo's controller, rules + HUD, autopilot, follow camera; lit meshes, `mesh_sphere`, HUD channel, collider picking; bot playthrough tests + wasm smoke
+- [ ] Phase 11: forge-animate (`Lerp`, easing, tweens, keyframe clips, `Animator` with loop modes and crossfade)
+- [ ] Phase 12: forge-physics (rigid bodies, sequential-impulse solver over a generic `Constraint` class, joints, sleeping, render interpolation, deterministic step, character controller)
 - [x] Web input: `forge_app::input` (`Input` resource, `app_frame_input`) + keyboard/pointer/wheel listeners in `forge_app::web`; demo WASD movement; browser run setup (`scripts/web-serve.sh`, `web/`, README.md)

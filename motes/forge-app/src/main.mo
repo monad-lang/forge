@@ -14,8 +14,9 @@
 // WASD or the arrow keys slide the whole hierarchy across the floor,
 // relative to the camera (hold Shift to go faster): a system reading
 // `world_input`. The camera is an orbit camera (`forge_app::orbit`):
-// right- or middle-drag or Q/E/R/F rotate, the wheel zooms. Clicking a mesh
-// records its entity id in the canvas's `data-picked`.
+// right- or middle-drag or Q/E/R/F rotate, the wheel zooms. Every mesh has
+// a collider, so clicking picks by `forge_collide` raycast and records the
+// entity id in the canvas's `data-picked`.
 //
 // Run it in a browser: `devenv shell -- scripts/web-serve.sh`, then open
 // http://localhost:8080 (README.md, "Run the demo in a browser").
@@ -47,6 +48,7 @@ use lib::orbit {
     Orbit, orbit_new, orbit_rig, orbit_forward, orbit_right, world_orbit_opt, app_add_orbit_camera
 }
 use lib::web {web_mount, web_dispatch, web_tick}
+use forge_collide {Collider, collider, shape_box, set_collider}
 
 // ── Spin ────────────────────────────────────────────────────────────
 
@@ -196,18 +198,23 @@ def as_player (world : World) (e : Entity) : World :=
     let p : Player := { speed := 1.0 : Player } in
     insert_component world e player_name (Any.any p)
 
+/// A box collider of half extents `(x, y, z)` on `e`.
+def boxed (world : World) (e : Entity) (x : F64) (y : F64) (z : F64) : World :=
+    set_collider world e (collider (shape_box (vec3 x y z)))
+
 def scene (h : Handles) : World :=
     let root : Spawned := spawn_transform empty_world (transform_from_translation (vec3 0.0 0.0 0.0)) in
-    let w0 : World := as_player root.world root.entity in
+    let w0 : World := boxed (as_player root.world root.entity) root.entity 0.75 0.75 0.75 in
     let w1 : World := with_spin (set_mesh w0 root.entity (mesh_component h.cube h.red)) root.entity 0.8 in
     let arm : Spawned := spawn_transform_child w1 (transform_from_translation (vec3 2.0 0.0 0.0)) root.entity in
-    let w2 : World := set_mesh arm.world arm.entity (mesh_component h.cylinder h.teal) in
+    let w2 : World := boxed (set_mesh arm.world arm.entity (mesh_component h.cylinder h.teal)) arm.entity 0.4 0.5 0.4 in
     let top : Spawned := spawn_transform_child w2 (transform_from_translation (vec3 0.0 0.8 0.0)) arm.entity in
-    let w3 : World := with_spin (set_mesh top.world top.entity (mesh_component h.small h.gold)) top.entity 3.0 in
+    let w3 : World := with_spin (boxed (set_mesh top.world top.entity (mesh_component h.small h.gold)) top.entity 0.3 0.3 0.3)
+                                top.entity 3.0 in
     let tilt : Quat := quat_from_axis_angle (vec3 1.0 0.0 0.0) (0.0 - f64_half_pi) in
     let floor : Spawned :=
         spawn_transform w3 (transform_new (vec3 0.0 (0.0 - 1.5) 0.0) tilt (vec3 1.0 1.0 1.0)) in
-    set_mesh floor.world floor.entity (mesh_component h.floor h.ground)
+    boxed (set_mesh floor.world floor.entity (mesh_component h.floor h.ground)) floor.entity 5.0 5.0 0.01
 
 // ── The app ─────────────────────────────────────────────────────────
 

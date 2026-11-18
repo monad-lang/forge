@@ -1,0 +1,40 @@
+[mote]
+name = "mo_venture"
+version = "0.1.0"
+edition = "2026"
+
+# Mo Venture: forge's example game, a 3D platformer. It depends on
+# `forge_app` ONLY (the engine vocabulary is re-exported there).
+#
+# Like forge-app, the web bin (`src/main.mo`) reaches browser externs, so
+# the mote is web-only and `monad test` drops the bin; the game logic lives
+# in native modules (`lib.mo` and below) that the test sweep runs.
+targets = ["web"]
+
+[[bin]]
+name = "mo-venture-web"
+path = "src/main.mo"
+
+[dependencies.forge_app]
+workspace = true
+
+# A `pub use` re-export does not carry across motes (gap G12), so the engine
+# motes the game names are listed too. forge_app is still the only engine
+# surface the game builds an App with.
+[dependencies.forge_core]
+workspace = true
+
+[dependencies.forge_math]
+workspace = true
+
+[dependencies.forge_scene]
+workspace = true
+
+[dependencies.forge_schedule]
+workspace = true
+
+[dependencies.forge_render]
+workspace = true
+
+[dependencies.forge_collide]
+workspace = true

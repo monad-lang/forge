@@ -51,6 +51,8 @@ use lib::app {
     app_assets, app_frame_viewed, app_plan
 }
 use lib::orbit {world_camera_rig}
+use lib::hud {Hud, HudEntry, hud_empty, world_hud, hud_changes}
+use lib::pick {world_pick}
 use lib::input {
     Input, InputEvent, input_empty, input_apply, input_end_frame,
     input_key_down, input_key_up, input_pointer_move, input_pointer_down, input_pointer_up,
@@ -84,7 +86,8 @@ pub struct WebState {
     last_ms : F64,
     frames : I64,
     picked : I64,
-    input : Input
+    input : Input,
+    hud : Hud
 }
 
 pub instance Copy WebState {
@@ -92,9 +95,9 @@ pub instance Copy WebState {
 }
 
 def web_state (app : App) (renderer : WebGlRenderer) (rig : CameraRig) (world : World)
-    (last_ms : F64) (frames : I64) (picked : I64) (input : Input) : WebState :=
+    (last_ms : F64) (frames : I64) (picked : I64) (input : Input) (hud : Hud) : WebState :=
     { app := app, renderer := renderer, rig := rig, world := world, last_ms := last_ms,
-      frames := frames, picked := picked, input := input
+      frames := frames, picked := picked, input := input, hud := hud
       : WebState }
 
 /// Frame `dt` in seconds from two rAF timestamps in milliseconds (0 on the
@@ -122,7 +125,7 @@ def report (text : String) : IO Unit := do {
 // ── Mount ───────────────────────────────────────────────────────────
 
 def mounted (a : App) (rig : CameraRig) (r : WebGlRenderer) : IO Unit := do {
-    let st : WebState := web_state a r rig (app_initial_world a) (0.0 - 1.0) 0 (0 - 1) input_empty;
+    let st : WebState := web_state a r rig (app_initial_world a) (0.0 - 1.0) 0 (0 - 1) input_empty hud_empty;
     let cell <- Ref.new st;
     let _ <- Keep.save cell;
     let _ <- Dom.on_frame (I64.to_string web_frame_handler);
@@ -193,8 +196,24 @@ def frame_with (cell : Ref WebState) (st : WebState) (now : F64) (size : Size2) 
     let f : Frame := app_frame_viewed st.app st.world st.input (web_dt st.last_ms now) (view_of st size);
     let plan : FramePlan := app_plan st.app f;
     let _ <- webgl_submit st.renderer plan;
+    let hud : Hud := world_hud (frame_world f);
+    let _ <- mirror_hud (webgl_canvas st.renderer) (hud_changes st.hud hud);
     Ref.set cell (web_state st.app st.renderer st.rig (frame_world f) now
-                    (I64.add st.frames 1) st.picked (input_end_frame st.input))
+                    (I64.add st.frames 1) st.picked (input_end_frame st.input) hud)
+}
+
+/// Write each changed HUD entry to the canvas as `data-hud-<key>`.
+#[terminating]
+def mirror_hud (canvas : Node) (es : List HudEntry) : IO Unit :=
+    match es {
+        List.empty => IO.pure unit,
+        List.cons e rest => mirror_one canvas e rest
+    }
+
+#[terminating]
+def mirror_one (canvas : Node) (e : HudEntry) (rest : List HudEntry) : IO Unit := do {
+    let _ <- Dom.set_attr canvas (String.concat "data-hud-" e.key) e.value;
+    mirror_hud canvas rest
 }
 
 /// One animation frame.
@@ -223,18 +242,19 @@ def picked_id (o : Option Picked) : I64 :=
         Option.none => 0 - 1
     }
 
-/// The entity id under canvas point `(x, y)` (CSS pixels), or -1.
+/// The entity id under canvas point `(x, y)` (CSS pixels), or -1: the
+/// nearest collider when the world has colliders, else the nearest mesh.
 pub def web_pick_at (st : WebState) (size : Size2) (x : F64) (y : F64) : I64 :=
     let cam : Camera := camera_for (rig_for st st.world) size in
     match camera_screen_ray cam (size_width size) (size_height size) x y {
         Option.none => 0 - 1,
-        Option.some r => picked_id (pick_entity st.world (app_assets st.app) r)
+        Option.some r => world_pick st.world (app_assets st.app) r
     }
 
 def click_with (cell : Ref WebState) (st : WebState) (size : Size2) (x : F64) (y : F64) : IO Unit := do {
     let id : I64 := web_pick_at st size x y;
     let _ <- Dom.set_attr (webgl_canvas st.renderer) "data-picked" (I64.to_string id);
-    Ref.set cell (web_state st.app st.renderer st.rig st.world st.last_ms st.frames id st.input)
+    Ref.set cell (web_state st.app st.renderer st.rig st.world st.last_ms st.frames id st.input st.hud)
 }
 
 /// A click on the canvas: pick, record the id on the state and as the
@@ -329,7 +349,7 @@ def read_input_event (k : String) : IO (Option InputEvent) :=
 
 def input_with (cell : Ref WebState) (st : WebState) (ev : InputEvent) : IO Unit :=
     Ref.set cell (web_state st.app st.renderer st.rig st.world st.last_ms st.frames st.picked
-                    (input_apply st.input ev))
+                    (input_apply st.input ev) st.hud)
 
 def input_from (cell : Ref WebState) (st : WebState) (o : Option InputEvent) : IO Unit :=
     match o {

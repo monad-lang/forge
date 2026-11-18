@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Build the forge web demo into target/web/: app.wasm, the generated loader
-# (web.js), the host runtime (web_runtime.js, float_format.js) and the page
-# (web/index.html, web/forge-floor.png). Used by web-serve.sh (browser) and
-# web-smoke.sh (Node, stub GL).
+# Build a forge web app into target/web/<app>/: app.wasm, the generated
+# loader (web.js), the host runtime (web_runtime.js, float_format.js) and
+# the app's page. Used by web-serve.sh (browser) and web-smoke.sh (Node,
+# stub GL).
 #
-#   devenv shell -- scripts/web-build.sh
+#   devenv shell -- scripts/web-build.sh               # the forge demo
+#   devenv shell -- scripts/web-build.sh mo-venture    # the example game
 #   MONAD_SRC=/path/to/monad scripts/web-build.sh
+#
+# Apps:  demo        motes/forge-app,   bin forge-app-web,   page web/
+#        mo-venture  games/mo-venture,  bin mo-venture-web,  page games/mo-venture/web/
 #
 # The web host JS is NOT shipped with the toolchain or with the `web_wasm`
 # git dependency, so it comes from a monad checkout (`MONAD_SRC`, default
@@ -22,7 +26,13 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 monad_src="${MONAD_SRC:-$root/../monad}"
 monad_bin="${MONAD:-monad}"
-out="$root/target/web"
+app="${1:-demo}"
+case "$app" in
+    demo)       mote=motes/forge-app;  bin=forge-app-web;  page="$root/web" ;;
+    mo-venture) mote=games/mo-venture; bin=mo-venture-web; page="$root/games/mo-venture/web" ;;
+    *) echo "web-build: unknown app '$app' (demo, mo-venture)" >&2; exit 2 ;;
+esac
+out="$root/target/web/$app"
 
 rev="$(sed -n 's/^git_commit = "\([0-9a-f]*\)"$/\1/p' "$root/mote.lock" | head -n 1)"
 [ -n "$rev" ] || { echo "web-build: no web_wasm commit in mote.lock" >&2; exit 1; }
@@ -48,19 +58,22 @@ done
 # 'Glue.loader'` (the workspace is found from the working directory).
 monad_abs="$(command -v "$monad_bin")"
 (cd "$monad_src" && MONAD_ROOT="$monad_src" MONAD="$monad_abs" scripts/gen-web-js.sh "$out/web.js")
-cp "$root"/web/* "$out/"
+cp "$page"/* "$out/"
 
 # A member-scoped build reads `mote.lock` from the MEMBER's directory, not
 # the workspace root that declares `web_wasm` (plans-monad
 # 2026-11-17-forge-webgl-consumer-gaps G2). Give the two web members a copy
 # of the root lock for the build only, so no second lock is committed to
-# drift.
-lock_copies=("$root/motes/forge-app/mote.lock" "$root/motes/forge-webgl/mote.lock")
-cleanup() { rm -f "${lock_copies[@]}"; }
+# drift. A copy that was already there (a developer's own) is left alone.
+lock_copies=()
+for m in motes/forge-app motes/forge-webgl "$mote"; do
+    l="$root/$m/mote.lock"
+    if [ ! -e "$l" ]; then cp "$root/mote.lock" "$l"; lock_copies+=("$l"); fi
+done
+cleanup() { if [ "${#lock_copies[@]}" -gt 0 ]; then rm -f "${lock_copies[@]}"; fi; }
 trap cleanup EXIT
-for l in "${lock_copies[@]}"; do cp "$root/mote.lock" "$l"; done
 
-echo "== build: forge-app-web for wasm32-unknown-unknown =="
-(cd "$root" && "$monad_bin" build --target wasm32-unknown-unknown motes/forge-app \
-    --bin forge-app-web -o "$out/app.wasm")
+echo "== build: $bin for wasm32-unknown-unknown =="
+(cd "$root" && "$monad_bin" build --target wasm32-unknown-unknown "$mote" \
+    --bin "$bin" -o "$out/app.wasm")
 echo "web-build: wrote $out"

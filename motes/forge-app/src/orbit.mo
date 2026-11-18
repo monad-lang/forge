@@ -114,6 +114,27 @@ pub def orbit_update (o : Orbit) (i : Input) (dt : F64) : Orbit :=
     let distance : F64 := f64_clamp o.min_distance o.max_distance (o.distance * scale) in
     orbit_mk o.target yaw pitch distance o.fovy o.min_distance o.max_distance
 
+/// The same orbit around a new target.
+pub def orbit_set_target (o : Orbit) (target : Vec3) : Orbit :=
+    orbit_mk target o.yaw o.pitch o.distance o.fovy o.min_distance o.max_distance
+
+/// The same orbit with a new yaw and pitch (pitch clamped).
+pub def orbit_set_angles (o : Orbit) (yaw : F64) (pitch : F64) : Orbit :=
+    orbit_mk o.target yaw (f64_clamp (0.0 - orbit_max_pitch) orbit_max_pitch pitch) o.distance o.fovy
+        o.min_distance o.max_distance
+
+/// The fraction of the remaining gap a follower closes in `dt` at `rate`
+/// (per second): `rate*dt / (1 + rate*dt)`, an exponential-like ease that
+/// stays in [0, 1) for any frame time.
+pub def follow_alpha (rate : F64) (dt : F64) : F64 :=
+    let k : F64 := rate * dt in
+    if k <= 0.0 then 0.0 else k / (1.0 + k)
+
+/// Move the target toward `goal`: a camera that trails a moving subject.
+pub def orbit_follow (o : Orbit) (goal : Vec3) (dt : F64) (rate : F64) : Orbit :=
+    let a : F64 := follow_alpha rate dt in
+    orbit_set_target o (v3_add o.target (v3_scale (v3_sub goal o.target) a))
+
 // ── World resources ─────────────────────────────────────────────────
 
 pub def orbit_name : String := "forge.orbit"
@@ -187,6 +208,12 @@ pub def orbit_step (initial : Orbit) (world : World) : World :=
         (orbit_update (orbit_or world initial) (world_input world) (time_delta (world_time world)))
 
 pub def orbit_system (initial : Orbit) : WorldM Id Unit := WorldM.modify (orbit_step initial)
+
+/// Ease the world's orbit (starting from `initial`) toward `goal` at `rate`
+/// and publish its rig: a game's follow-camera system calls this after it
+/// moves the subject.
+pub def world_orbit_follow (initial : Orbit) (goal : Vec3) (rate : F64) (world : World) : World :=
+    publish world (orbit_follow (orbit_or world initial) goal (time_delta (world_time world)) rate)
 
 /// Drive the app's camera with an orbit starting at `initial`, as an
 /// update-stage system. Until its first run publishes a rig, a host uses its
@@ -273,3 +300,18 @@ def test_rig_falls_back_without_orbit : Bool :=
     let fb : CameraRig := camera_rig (vec3 0.0 1.0 2.0) (vec3 0.0 0.0 0.0) 1.0 in
     let r : CameraRig := world_camera_rig empty_world fb in
     near r.eye.y 1.0
+
+#[test]
+def test_follow_closes_part_of_the_gap : Bool :=
+    let o : Orbit := orbit_follow o0 (vec3 10.0 0.0 0.0) 0.1 10.0 in
+    let t : Vec3 := orbit_target o in
+    near t.x 5.0 && near (orbit_distance o) 10.0
+
+#[test]
+def test_follow_with_no_time_stays : Bool :=
+    let t : Vec3 := orbit_target (orbit_follow o0 (vec3 10.0 0.0 0.0) 0.0 10.0) in
+    near t.x 0.0
+
+#[test]
+def test_set_angles_clamps_pitch : Bool :=
+    near (orbit_pitch (orbit_set_angles o0 0.5 9.0)) orbit_max_pitch

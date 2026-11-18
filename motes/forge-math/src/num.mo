@@ -43,11 +43,24 @@ def sqrt_go (x : F64) (g : F64) (n : I64) : F64 :=
     then sqrt_go x ((g + x / g) * 0.5) (I64.sub n 1)
     else g
 
-/// `sqrt x`, seeded `x` when `x > 1` (so the first Newton step is already
-/// close) and `1.0` otherwise. 24 iterations drive a double to full precision,
-/// and land *exactly* on an integer whose square is exact.
+/// Scale `x` by powers of 4 into `[0.25, 4)`, tracking the matching power
+/// of 2 for the root. Powers of 2 are exact in binary, so this changes no
+/// bits of the result. Bounded: a double's exponent is at most 1023 either
+/// way, so 1100 steps cover every finite input.
+#[terminating]
+def sqrt_scaled (x : F64) (scale : F64) (n : I64) : F64 :=
+    if I64.lt 1100 n then scale * sqrt_go x 1.0 8
+    else if x >= 4.0 then sqrt_scaled (x * 0.25) (scale * 2.0) (I64.add n 1)
+    else if x < 0.25 then sqrt_scaled (x * 4.0) (scale * 0.5) (I64.add n 1)
+    else scale * sqrt_go x 1.0 8
+
+/// `sqrt x` (0 for `x <= 0`). The argument is first scaled into
+/// `[0.25, 4)`, where Newton from 1.0 reaches full precision in about 6
+/// steps; 8 are run. That keeps tiny and huge inputs exact too (seeding
+/// Newton far from the root only halves the error per step, so
+/// `sqrt 0` used to come out near 6e-8). A perfect square lands exactly.
 pub def f64_sqrt (x : F64) : F64 :=
-    if x > 1.0 then sqrt_go x x 24 else sqrt_go x 1.0 24
+    if x <= 0.0 then 0.0 else sqrt_scaled x 1.0 0
 
 /// Reduce `x` into `[-pi, pi]` by stepping `+-2pi`. Bounded: gives up after
 /// 20 steps (a caller passing `1e30` radians gets a wrong answer, not a hang).
@@ -121,6 +134,14 @@ def test_f64_sqrt_perfect_square : Bool := F64.beq (f64_sqrt 25.0) 5.0
 
 #[test]
 def test_f64_sqrt_quarter : Bool := F64.beq (f64_sqrt 0.25) 0.5
+
+#[test]
+def test_f64_sqrt_zero_is_exact : Bool := F64.beq (f64_sqrt 0.0) 0.0
+
+#[test]
+def test_f64_sqrt_tiny_and_huge : Bool :=
+    f64_approx_eps 0.0000000000000001 (f64_sqrt 0.0000000001) 0.00001
+        && F64.beq (f64_sqrt 1000000000000.0) 1000000.0
 
 #[test]
 def test_f64_sqrt_two : Bool := f64_approx_eps 0.0000001 (f64_sqrt 2.0) 1.4142135623730951

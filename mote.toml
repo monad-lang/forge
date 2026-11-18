@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "motes/*",
+  "games/*",
 ]
 
 [workspace.dependencies.forge_app]
@@ -23,6 +24,9 @@ path = "motes/forge-math"
 
 [workspace.dependencies.forge_reactive]
 path = "motes/forge-reactive"
+
+[workspace.dependencies.forge_collide]
+path = "motes/forge-collide"
 
 # The WebGL backend. Web-only (`targets = ["web"]`); reached by a game
 # through `forge_app::web`, never by the native-tested library.

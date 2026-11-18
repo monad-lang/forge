@@ -1,0 +1,169 @@
+// Mo Venture: the Skyway level, as data.
+//
+// A course of floating platforms running along -z: a start island, three
+// stairs, a gap, a narrow bridge, the first checkpoint, a diagonal climb, a
+// gap too wide to jump without the air dash, the second checkpoint, a high
+// ledge and the goal beacon. 20 sparks sit along the way, at the height of
+// Mo's body, so following the route collects them.
+//
+// `route` is the autopilot's list of landing spots (platform tops), one
+// marked `act_dash` where the gap needs the air dash.
+
+use std::derive {}
+use init::copy {Copy}
+use forge_math {Vec3, vec3}
+
+/// What a platform is made of (its look; all are solid). `Copy`.
+pub def kind_grass : I64 := 0
+
+pub def kind_stone : I64 := 1
+
+pub def kind_wood : I64 := 2
+
+pub def kind_gold : I64 := 3
+
+/// A box platform: centre, half extents and kind. `Copy`.
+#[derive Copy Clone]
+pub struct Plat {
+    center : Vec3,
+    half : Vec3,
+    kind : I64
+}
+
+pub def plat (cx : F64) (cy : F64) (cz : F64) (hx : F64) (hy : F64) (hz : F64) (kind : I64) : Plat :=
+    { center := vec3 cx cy cz, half := vec3 hx hy hz, kind := kind : Plat }
+
+pub def plat_top (p : Plat) : F64 := p.center.y + p.half.y
+
+/// Route actions.
+pub def act_walk : I64 := 0
+
+pub def act_jump : I64 := 1
+
+pub def act_dash : I64 := 2
+
+/// A landing spot on a platform top, and how to get there. `Copy`.
+#[derive Copy Clone]
+pub struct Way {
+    at : Vec3,
+    act : I64
+}
+
+def way (x : F64) (y : F64) (z : F64) (act : I64) : Way := { at := vec3 x y z, act := act : Way }
+
+pub def way_at (w : Way) : Vec3 := w.at
+
+pub def way_act (w : Way) : I64 := w.act
+
+/// A whole level. `Copy` (identity: persistent lists).
+pub struct Level {
+    plats : List Plat,
+    sparks : List Vec3,
+    posts : List Vec3,
+    goal : Vec3,
+    start : Vec3,
+    kill_y : F64,
+    route : List Way
+}
+
+pub instance Copy Level {
+    def copy (l : Level) : Pair Level Level := Pair.pair l l
+}
+
+pub def level_plats (l : Level) : List Plat := l.plats
+
+pub def level_sparks (l : Level) : List Vec3 := l.sparks
+
+pub def level_posts (l : Level) : List Vec3 := l.posts
+
+pub def level_goal (l : Level) : Vec3 := l.goal
+
+pub def level_start (l : Level) : Vec3 := l.start
+
+pub def level_kill_y (l : Level) : F64 := l.kill_y
+
+pub def level_route (l : Level) : List Way := l.route
+
+pub def level_spark_count (l : Level) : I64 := List.length l.sparks
+
+pub def level_new (plats : List Plat) (sparks : List Vec3) (posts : List Vec3) (goal : Vec3)
+    (start : Vec3) (kill_y : F64) (route : List Way) : Level :=
+    { plats := plats, sparks := sparks, posts := posts, goal := goal, start := start,
+      kill_y := kill_y, route := route
+      : Level }
+
+def n (x : F64) : F64 := 0.0 - x
+
+// ── Skyway ──────────────────────────────────────────────────────────
+
+/// Platform tops: start 0, stairs 0.6 / 1.2 / 1.8, then 1.8 to the first
+/// checkpoint, the climb 2.4 / 3.0 / 3.6, 3.6 to the second checkpoint,
+/// and 5.0 for the ledge and the goal.
+def skyway_plats : List Plat :=
+    [ plat 0.0 (n 0.5) 0.0 3.0 0.5 3.0 kind_grass,          // start island, z -3..3
+      plat 0.0 0.1 (n 4.0) 1.5 0.5 1.0 kind_stone,          // stair, top 0.6
+      plat 0.0 0.7 (n 6.0) 1.5 0.5 1.0 kind_stone,          // stair, top 1.2
+      plat 0.0 1.3 (n 8.0) 1.5 0.5 1.0 kind_stone,          // stair, top 1.8, z -9..-7
+      plat 0.0 1.3 (n 12.0) 1.5 0.5 1.5 kind_grass,         // after a 1.5 gap, z -13.5..-10.5
+      plat 0.0 1.55 (n 17.5) 0.45 0.25 3.0 kind_wood,       // bridge, z -20.5..-14.5
+      plat 0.0 1.3 (n 23.5) 2.5 0.5 2.5 kind_grass,         // checkpoint 1, z -26..-21
+      plat (n 1.3) 1.9 (n 29.0) 1.2 0.5 1.2 kind_stone,     // climb, top 2.4, z -30.2..-27.8
+      plat (n 2.15) 2.5 (n 32.5) 1.2 0.5 1.2 kind_stone,    // climb, top 3.0
+      plat (n 3.0) 3.1 (n 36.0) 1.2 0.5 1.2 kind_stone,     // climb, top 3.6, z -37.2..-34.8
+      plat (n 3.0) 3.1 (n 44.3) 1.5 0.5 1.5 kind_grass,     // past the 5.6 dash gap, z -45.8..-42.8
+      plat (n 3.0) 3.1 (n 50.5) 2.5 0.5 2.5 kind_grass,     // checkpoint 2, z -53..-48
+      plat (n 3.0) 4.5 (n 56.5) 2.0 0.5 1.5 kind_stone,     // high ledge, top 5.0, z -58..-55
+      plat (n 3.0) 4.5 (n 62.5) 2.5 0.5 2.5 kind_gold ]     // goal, z -65..-60
+
+/// Sparks at platform top + 0.7: the height of Mo's body.
+def skyway_sparks : List Vec3 :=
+    [ vec3 0.0 0.7 (n 0.5), vec3 0.0 0.7 (n 2.0),
+      vec3 0.0 1.3 (n 4.0), vec3 0.0 1.9 (n 6.0), vec3 0.0 2.5 (n 8.0),
+      vec3 0.0 2.5 (n 12.0),
+      vec3 0.0 2.5 (n 15.5), vec3 0.0 2.5 (n 17.5), vec3 0.0 2.5 (n 19.5),
+      vec3 0.0 2.5 (n 22.0), vec3 0.0 2.5 (n 25.0),
+      vec3 (n 1.3) 3.1 (n 29.0), vec3 (n 2.15) 3.7 (n 32.5), vec3 (n 3.0) 4.3 (n 36.0),
+      vec3 (n 3.0) 4.3 (n 43.6), vec3 (n 3.0) 4.3 (n 45.0),
+      vec3 (n 3.0) 4.3 (n 50.5),
+      vec3 (n 3.0) 5.7 (n 56.5),
+      vec3 (n 3.0) 5.7 (n 61.0), vec3 (n 3.0) 5.7 (n 63.5) ]
+
+/// The two checkpoint platforms' centres (on their tops). A checkpoint is
+/// a trigger across the platform there; its post stands to one side.
+def skyway_posts : List Vec3 := [vec3 0.0 1.8 (n 23.5), vec3 (n 3.0) 3.6 (n 50.5)]
+
+/// Landing spots in order; the autopilot jumps edges and steps on its own.
+def skyway_route : List Way :=
+    [ way 0.0 0.6 (n 4.0) act_walk,
+      way 0.0 1.2 (n 6.0) act_walk,
+      way 0.0 1.8 (n 8.0) act_walk,
+      way 0.0 1.8 (n 12.0) act_walk,
+      way 0.0 1.8 (n 17.5) act_walk,
+      way 0.0 1.8 (n 23.5) act_walk,
+      way (n 1.3) 2.4 (n 29.0) act_walk,
+      way (n 2.15) 3.0 (n 32.5) act_walk,
+      way (n 3.0) 3.6 (n 36.0) act_walk,
+      way (n 3.0) 3.6 (n 44.3) act_dash,
+      way (n 3.0) 3.6 (n 50.5) act_walk,
+      way (n 3.0) 5.0 (n 56.5) act_walk,
+      way (n 3.0) 5.0 (n 62.5) act_walk ]
+
+/// The Skyway: Mo starts on the island facing -z.
+pub def skyway : Level :=
+    level_new skyway_plats skyway_sparks skyway_posts (vec3 (n 3.0) 5.0 (n 62.5)) (vec3 0.0 0.0 1.5)
+              (n 8.0) skyway_route
+
+/// A three-platform level for quick tests: walk, jump a 1.5 gap, step up a
+/// 0.6 rise with a jump, reach the goal. One spark on the way.
+pub def tiny_level : Level :=
+    level_new
+        [ plat 0.0 (n 0.5) 0.0 2.0 0.5 2.0 kind_grass,
+          plat 0.0 (n 0.5) (n 5.5) 1.5 0.5 1.5 kind_grass,
+          plat 0.0 0.1 (n 10.0) 1.5 0.5 1.5 kind_gold ]
+        [vec3 0.0 0.7 (n 5.5)]
+        []
+        (vec3 0.0 0.6 (n 10.0))
+        (vec3 0.0 0.0 1.0)
+        (n 8.0)
+        [ way 0.0 0.0 (n 5.5) act_walk,
+          way 0.0 0.6 (n 10.0) act_walk ]

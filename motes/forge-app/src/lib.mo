@@ -47,3 +47,12 @@ pub use lib::orbit {
     world_camera_rig_opt, world_camera_rig, world_set_camera_rig,
     orbit_step, orbit_system, app_add_orbit_camera
 }
+
+pub use lib::hud {
+    Hud, HudEntry, hud_entry, hud_entry_key, hud_entry_value, hud_empty, hud_list, hud_put,
+    hud_lookup, hud_changes, hud_name, world_hud, world_set_hud, hud_set, hud_get
+}
+
+pub use lib::pick {pick_reach, world_pick}
+
+pub use lib::orbit {orbit_set_target, orbit_set_angles, follow_alpha, orbit_follow, world_orbit_follow}

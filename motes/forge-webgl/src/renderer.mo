@@ -71,7 +71,7 @@ use forge_render::{
 }
 use lib::shaders {
     vertex_source, flat_fragment_source, textured_fragment_source,
-    vertex_stride_bytes, uv_offset_bytes
+    vertex_stride_bytes, uv_offset_bytes, normal_offset_bytes
 }
 
 // ── Affinity of the canvas handle ───────────────────────────────────
@@ -140,6 +140,7 @@ struct ProgramInfo {
     program : GlProgram,
     a_position : I64,
     a_uv : I64,
+    a_normal : I64,
     u_model : Slot,
     u_view : Slot,
     u_proj : Slot,
@@ -151,10 +152,10 @@ instance Copy ProgramInfo {
     def copy (p : ProgramInfo) : Pair ProgramInfo ProgramInfo := Pair.pair p p
 }
 
-def program_info_new (program : GlProgram) (a_position : I64) (a_uv : I64)
+def program_info_new (program : GlProgram) (a_position : I64) (a_uv : I64) (a_normal : I64)
     (u_model : Slot) (u_view : Slot) (u_proj : Slot) (u_tint : Slot) (u_tex : Slot)
     : ProgramInfo :=
-    { program := program, a_position := a_position, a_uv := a_uv,
+    { program := program, a_position := a_position, a_uv := a_uv, a_normal := a_normal,
       u_model := u_model, u_view := u_view, u_proj := u_proj, u_tint := u_tint,
       u_tex := u_tex
       : ProgramInfo }
@@ -164,12 +165,13 @@ def program_info_new (program : GlProgram) (a_position : I64) (a_uv : I64)
 def program_info (ctx : GlContext) (p : GlProgram) : IO ProgramInfo := do {
     let a_position <- Gl.attrib_location ctx p "a_position";
     let a_uv <- Gl.attrib_location ctx p "a_uv";
+    let a_normal <- Gl.attrib_location ctx p "a_normal";
     let u_model <- Gl.uniform_location ctx p "u_model";
     let u_view <- Gl.uniform_location ctx p "u_view";
     let u_proj <- Gl.uniform_location ctx p "u_proj";
     let u_tint <- Gl.uniform_location ctx p "u_tint";
     let u_tex <- Gl.uniform_location ctx p "u_tex";
-    IO.pure (program_info_new p (index_of a_position) (index_of a_uv)
+    IO.pure (program_info_new p (index_of a_position) (index_of a_uv) (index_of a_normal)
                 (slot_of u_model) (slot_of u_view) (slot_of u_proj) (slot_of u_tint)
                 (slot_of u_tex))
 }
@@ -653,6 +655,7 @@ def issue (r : WebGlRenderer) (info : ProgramInfo) (d : DrawCall) (g : GpuMesh) 
     let _ <- Gl.bind_buffer ctx GlBufferTarget.element_array g.ibo;
     let _ <- attribute ctx info.a_position 3 0;
     let _ <- attribute ctx info.a_uv 2 uv_offset_bytes;
+    let _ <- attribute ctx info.a_normal 3 normal_offset_bytes;
     let _ <- Gl.draw_elements ctx GlPrimitive.triangles g.count 0;
     IO.pure 1
 }

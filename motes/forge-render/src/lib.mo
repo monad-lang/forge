@@ -37,7 +37,7 @@ pub use lib::backend {
 pub use lib::mesh {
     MeshData, mesh_data, mesh_stride, mesh_vertices, mesh_indices, mesh_vertex_count,
     mesh_index_count, mesh_triangle_count, mesh_is_valid, mesh_bounds,
-    mesh_quad, mesh_box, mesh_cube, mesh_disc, mesh_cylinder
+    mesh_quad, mesh_box, mesh_cube, mesh_disc, mesh_cylinder, mesh_sphere
 }
 
 pub use lib::material {
