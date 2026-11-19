@@ -53,10 +53,10 @@ If the commit changed, check it out in the monad checkout
 devenv shell -- scripts/web-serve.sh mo-venture
 ```
 
-Then open <http://localhost:8080>. **Known limit:** monad's web target has
-no garbage collector yet (PLAN.md, gap G13), so the game runs out of wasm
-memory after a few seconds in a browser. The native build and tests are
-not affected.
+Then open <http://localhost:8080>. The web build needs a nightly with
+monad's web collector (`nightly-2026-11-19-b0fe09df` or later, PLAN.md gap
+G13). An older `monad` links the old runtime and fails with "undefined
+symbol: monad_export_enter"; run `monadup default`.
 
 Mo, a small blue explorer with an
 antenna, runs across the Skyway: floating platforms, stairs, a narrow
@@ -128,10 +128,10 @@ This runs the same builds and then drives both apps in Node against monad's
 recording stub DOM and stub WebGL, in WebGL 2, WebGL 1 and no-WebGL modes.
 For the demo it checks setup, draws per frame, texture upload, picking,
 keyboard movement and context-loss recovery. For Mo Venture it checks
-running and jumping by key and the autopilot climbing the stairs. Runs are
-kept short because monad's web target does not free memory yet (PLAN.md,
-gap G13); the native tests play the whole level. `scripts/web-smoke.sh
-mo-venture` runs one app.
+running and jumping by key and the autopilot climbing the stairs. Both then
+run long (6000 demo frames, 900 more Mo Venture frames) and fail if the wasm
+memory passes a ceiling (`HEAP_CEILING_MIB`, 128 and 256; `LONG_FRAMES`
+sets the length). `scripts/web-smoke.sh mo-venture` runs one app.
 
 ## Writing a web game
 

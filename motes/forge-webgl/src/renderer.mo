@@ -74,17 +74,6 @@ use lib::shaders {
     vertex_stride_bytes, uv_offset_bytes, normal_offset_bytes
 }
 
-// ── Affinity of the canvas handle ───────────────────────────────────
-//
-// `Node` is an opaque host-side node id. `web_wasm` declares no `Copy Node`
-// (its own workspace runs the affine rule as a warning), but a canvas has to
-// be sized, asked for a context AND kept for later resizes. The identity
-// instance is honest for the reason it is for every handle here: two copies
-// name one node.
-pub instance Copy Node {
-    def copy (n : Node) : Pair Node Node := Pair.pair n n
-}
-
 // ── Uniform slots ───────────────────────────────────────────────────
 
 /// A uniform location that may be absent (optimised out, or not declared).

@@ -23,7 +23,10 @@
 //   - orbit camera: an idle frame repeats exactly; a right-drag and the
 //     wheel each change the view; the canvas suppresses its context menu;
 //   - context loss: a lost frame draws nothing; the frame after restore
-//     relinks both programs, re-uploads all meshes, and draws again.
+//     relinks both programs, re-uploads all meshes, and draws again;
+//   - heap: LONG_FRAMES more frames (default 6000, past where the old bump
+//     allocator ran out at 0.83 MB/frame) keep the wasm memory under
+//     HEAP_CEILING_MIB (default 128). PLAN.md gap G13, closed.
 
 import { readFile } from 'node:fs/promises';
 import { imports } from '../web.js';
@@ -205,4 +208,18 @@ if (count(back, 'linkProgram') !== 2) fail(`restore relinked ${count(back, 'link
 if (count(back, 'bufferData') !== 8) fail(`restore re-uploaded ${count(back, 'bufferData')} buffers, want 8`);
 if (count(back, 'drawElements') !== 4) fail(`the restored frame drew ${count(back, 'drawElements')}, want 4`);
 
-console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), keyboard move, orbit camera, loss + restore`);
+// ── heap: garbage is collected ──
+const memory = instance.exports.memory;
+const mib = (b) => (b / 1048576).toFixed(1);
+const longFrames = Number(process.env.LONG_FRAMES || 6000);
+const ceiling = Number(process.env.HEAP_CEILING_MIB || 128) * 1048576;
+let peak = memory.buffer.byteLength;
+gl.calls.length = 0;
+for (let i = 0; i < longFrames; i++) {
+  frame(1612 + 16 * i);
+  peak = Math.max(peak, memory.buffer.byteLength);
+  if (gl.calls.length > 100000) gl.calls.length = 0;
+}
+if (peak > ceiling) fail(`wasm memory reached ${mib(peak)} MiB over ${longFrames} frames (ceiling ${mib(ceiling)} MiB)`);
+
+console.log(`ok: ${path} [${mode}] -> setup, 4 draws/frame, texture upload, picking (centre=${centre}), keyboard move, orbit camera, loss + restore, ${longFrames} more frames at peak ${mib(peak)} MiB`);

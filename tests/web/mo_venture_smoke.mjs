@@ -11,12 +11,11 @@
 //   - keys: holding W runs Mo into the level (-z); Space jumps and lands;
 //   - autopilot: P hands Mo to the route bot, which climbs the stairs and
 //     collects sparks without falling;
-//   - context loss: a lost frame draws nothing; restore draws again.
-//
-// The run is kept to about 240 frames: monad's web target has no GC yet
-// (PLAN.md gap G13), and the game allocates about 11 MB per frame, so a
-// longer run exhausts the 4 GB wasm heap. The whole level is played by the
-// native tests (games/mo-venture/src/tests/game_tests.mo) instead.
+//   - context loss: a lost frame draws nothing; restore draws again;
+//   - heap: a further LONG_FRAMES frames (default 900, 15 s of play) keep
+//     the wasm memory under HEAP_CEILING_MIB (default 256). The game makes
+//     about 11 MB of garbage per frame; before monad's web collector
+//     (PLAN.md gap G13, closed) this ran out of the 4 GB heap by frame ~360.
 
 import { readFile } from 'node:fs/promises';
 import { imports } from '../web.js';
@@ -134,4 +133,18 @@ glStub.lost = false;
 const back = frame();
 if (count(back, 'linkProgram') !== 2 || count(back, 'drawElements') < 30) fail('the restored context did not draw the level');
 
-console.log(`ok: ${path} [${mode}] -> setup, HUD, idle, run, jump, autopilot up the stairs (sparks ${hud('sparks')}), loss + restore`);
+// ── heap: garbage is collected ──
+const memory = instance.exports.memory;
+const mib = (b) => (b / 1048576).toFixed(1);
+const longFrames = Number(process.env.LONG_FRAMES || 900);
+const ceiling = Number(process.env.HEAP_CEILING_MIB || 256) * 1048576;
+let peak = memory.buffer.byteLength;
+gl.calls.length = 0;
+for (let i = 0; i < longFrames; i++) {
+  frame();
+  if (gl.calls.length > 100000) gl.calls.length = 0;
+  peak = Math.max(peak, memory.buffer.byteLength);
+}
+if (peak > ceiling) fail(`wasm memory reached ${mib(peak)} MiB over ${longFrames} frames (ceiling ${mib(ceiling)} MiB)`);
+
+console.log(`ok: ${path} [${mode}] -> setup, HUD, idle, run, jump, autopilot up the stairs (sparks ${hud('sparks')}), loss + restore, ${longFrames} more frames at peak ${mib(peak)} MiB`);

@@ -953,10 +953,12 @@ Each engine phase lands with the game features that need it.
   whole Skyway (goal reached, no falls, both checkpoints, at least 15 of the
   20 sparks: the bot's line passes over a few); determinism. 16 tests. The
   smoke (`mo_venture_smoke.mjs`) runs and jumps by key and lets the
-  autopilot climb the stairs; it stays short because of G13.
-- **Blocked in the browser by G13:** the game allocates about 11 MB per
-  frame and the web target never frees, so it runs out of its 4 GB heap in
-  seconds. Native frame cost is also high (the Skyway playthrough takes
+  autopilot climb the stairs, then runs 900 more frames under a 256 MiB
+  heap ceiling (peak 50.6 MiB).
+- **Runs in the browser since G13 closed:** the game still makes about
+  11 MB of garbage per frame, but monad's web collector takes it (peak
+  50.6 MiB over ~1140 smoke frames; it used to run out of 4 GB in ~360).
+  Native frame cost is high (the Skyway playthrough takes
   ~15 s natively); building the collision scene once per frame instead of
   three times is the first saving.
 - **With Phase 11:** squash and stretch, a run cycle, spark pops, waving
@@ -1097,14 +1099,14 @@ Recorded in full, with repros and the workarounds above, in
 | G2 | member-scoped commands miss a workspace git dep's lock | `-w` from the root only |
 | G3 | a typed `let x : T <- ...` is still affine as a type variable | reuse moved into helpers with typed parameters |
 | G4 | an unresolved `use` is only a warning (`check` says 0 errors) | the stale `use lib::schedule` is fixed |
-| G5 | `web_wasm`'s `Node` and GL enums have no `Copy` | forge-webgl declares `Copy Node`; enums rebuilt per use |
+| G5 | `web_wasm`'s GL enums have no `Copy` (the `Node` half is fixed: web_wasm declares `Copy Node` since monad `b0fe09df`) | enums rebuilt per use |
 | G6 | the web loader contract is oak-named and single-app (`Keep`) | forge exports `oak_mount`/`oak_dispatch_event`/a no-op `oak_tick` |
 | G7 | web host JS and stubs are not shipped to consumers; the loader generator and the wasm build need undocumented env | `scripts/web-smoke.sh` reads them from a monad checkout at the pin; `devenv.nix` sets `MONAD_WEB_CC` |
 | G8 | no `I64` -> `F64` in `init` | `f64_of_i64` in forge-math |
 | G9 | `web_event`'s `WebEvent` cannot be named through `web_wasm`; trying breaks field access | one `WebEvent.current` getter per field in `forge_app::web` |
 | G10 | no prefix `!` on `Bool` (misleading "expected '('") | `Bool.not` |
 | G11 | no field access on a call result: `(f x).yaw` is "unknown variable 'yaw'" | bind with `let`, or a getter |
-| G13 | **the web target has no GC**: `runtime/src/platform_web.c` is a bump allocator that never frees, so every frame's garbage stays. Measured: the demo 0.83 MB/frame (4 GB wasm heap gone in ~80 s at 60 Hz), Mo Venture 11 MB/frame (~6 s) | none in forge; needs a collector (or arena reset) in monad's web runtime. Native builds use Boehm and are fine |
+| G13 | ✅ FIXED in monad `20b23090` (pinned at `b0fe09df`): the web target had no GC (a bump allocator; the demo grew 0.83 MB/frame, Mo Venture 11 MB/frame, ~6 s to 4 GB). `runtime/src/gc_wasm.c` now collects at export boundaries. Smoke peaks: demo 43.2 MiB over 6000 frames, Mo Venture 50.6 MiB over ~1140 | the smokes assert a heap ceiling. Needs `nightly-2026-11-19-b0fe09df` or later: an older binary links its own old runtime and fails with "undefined symbol: monad_export_enter" |
 | G12 | a `pub use` re-export of another mote's item is not visible to consumers: `use forge_app {Vec3}` is "`Vec3` is not imported, declared in `forge_math::vec`" | a game also depends on the engine motes it names |
 
 ## TDD approach
