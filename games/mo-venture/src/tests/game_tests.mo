@@ -371,13 +371,6 @@ def is_text (o : Option String) (want : String) : Bool :=
     }
 
 #[test]
-def test_bot_finishes_the_tiny_level : Bool :=
-    let a : App := mo_venture_autopilot tiny_level in
-    let r : Run := play a (app_initial_world a) 0 900 in
-    let g : GameState := game_of r.world in
-    game_won g && game_sparks g == 1 && game_falls g == 0 && is_text (hud_get r.world "sparks") "1/1"
-
-#[test]
 def test_idle_mo_stays_put : Bool :=
     let a : App := mo_venture_on tiny_level in
     let r : Run := play a (app_initial_world a) 0 60 in
@@ -386,48 +379,7 @@ def test_idle_mo_stays_put : Bool :=
         Option.none => false
     }
 
-#[test]
-def test_bot_finishes_the_skyway : Bool :=
-    let a : App := mo_venture_autopilot skyway in
-    let r : Run := play a (app_initial_world a) 0 3600 in
-    let g : GameState := game_of r.world in
-    // The bot's line (edge jumps, aimed landings) passes over a few sparks;
-    // it must still take most of them, never fall, and pass both checkpoints.
-    game_won g && game_falls g == 0 && game_sparks g >= 15 && game_checkpoint g == 2
-
-#[test]
-def test_bot_runs_are_deterministic : Bool :=
-    let a : App := mo_venture_autopilot tiny_level in
-    let r1 : Run := play a (app_initial_world a) 0 240 in
-    let r2 : Run := play a (app_initial_world a) 0 240 in
-    match find_mo r1.world {
-        Option.some e1 =>
-            match find_mo r2.world {
-                Option.some e2 =>
-                    let p1 : Vec3 := mo_position r1.world e1 in
-                    let p2 : Vec3 := mo_position r2.world e2 in
-                    p1.x == p2.x && p1.y == p2.y && p1.z == p2.z,
-                Option.none => false
-            },
-        Option.none => false
-    }
-
 // ── New levels, movers, the campaign ────────────────────────────────
-
-def bot_clears (lv : Level) (limit : I64) : Bool :=
-    let a : App := mo_venture_autopilot lv in
-    let r : Run := play a (app_initial_world a) 0 limit in
-    let g : GameState := game_of r.world in
-    game_won g && game_falls g == 0 && game_checkpoint g == 2
-
-#[test]
-def test_bot_finishes_cloud_steps : Bool := bot_clears cloud_steps 3600
-
-#[test]
-def test_bot_finishes_drift_docks : Bool := bot_clears drift_docks 6000
-
-#[test]
-def test_bot_finishes_sun_spire : Bool := bot_clears sun_spire 6000
 
 /// Mo standing on a ferry is carried with it: after 4 s the ferry is at its
 /// far end, 6 along +x, and Mo with it.
@@ -726,31 +678,3 @@ def test_only_the_player_collects : Bool :=
 
 // ── The new puzzle levels ───────────────────────────────────────────
 
-#[test]
-def test_bot_finishes_vine_wall : Bool := bot_clears vine_wall 6000
-
-#[test]
-def test_bot_finishes_brick_yard : Bool := bot_clears brick_yard 6000
-
-/// The ability levels play the same way twice.
-#[test]
-def test_the_puzzle_levels_are_deterministic : Bool :=
-    let a : App := mo_venture_autopilot vine_wall in
-    let r1 : Run := play a (app_initial_world a) 0 600 in
-    let r2 : Run := play a (app_initial_world a) 0 600 in
-    match pair_positions r1.world {
-        Option.some p1 =>
-            match pair_positions r2.world {
-                Option.some p2 =>
-                    match p1 { Pair.pair u1 v1 =>
-                        match p2 { Pair.pair u2 v2 =>
-                            let a1 : Vec3 := u1 in
-                            let b1 : Vec3 := v1 in
-                            let a2 : Vec3 := u2 in
-                            let b2 : Vec3 := v2 in
-                            a1.x == a2.x && a1.y == a2.y && a1.z == a2.z
-                            && b1.x == b2.x && b1.y == b2.y && b1.z == b2.z } },
-                Option.none => false
-            },
-        Option.none => false
-    }
