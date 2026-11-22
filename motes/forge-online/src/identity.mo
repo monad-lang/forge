@@ -102,21 +102,54 @@ def reverse_bytes (bs : List U8) (acc : List U8) : List U8 :=
         List.cons b rest => reverse_bytes rest (List.cons b acc)
     }
 
+/// The largest index <= `max` that is a UTF-8 boundary (a non-continuation
+/// byte, or the end of the string). `String.slice` answers "" when it cuts a
+/// character, which would drop an entire long display name.
+#[terminating]
+def utf8_cut (bs : List U8) (i : I64) (max : I64) (best : I64) : I64 :=
+    match bs {
+        List.empty => best,
+        List.cons b rest =>
+            if i > max then best
+            else
+                let boundary : Bool := b < 128 || b >= 192 in
+                let best2 : I64 := if boundary then i else best in
+                utf8_cut rest (I64.add i 1i64) max best2
+    }
+
 def cap_text (s : String) : String :=
-    if String.length s > display_max then String.slice s 0 display_max else s
+    let n : I64 := String.length s in
+    if n <= display_max
+    then s
+    else String.slice s 0 (utf8_cut (String.to_list s) 0 display_max 0)
 
 pub def sanitize_display (s : String) : String :=
     let trimmed : String := String.trim s in
     let cleaned : String := String.from_list (reverse_bytes (clean_bytes (String.to_list trimmed) List.empty) List.empty) in
     cap_text cleaned
 
+/// Characters allowed in an avatar URL: no controls, spaces, quotes, angle
+/// brackets or backslashes, so the value cannot break out of an HTML
+/// attribute if a renderer ever fails to escape it.
+#[terminating]
+def avatar_bytes_ok (bs : List U8) : Bool :=
+    match bs {
+        List.empty => true,
+        List.cons b rest =>
+            if b < 33 || b == 34 || b == 39 || b == 60 || b == 62 || b == 92 || b == 127
+            then false
+            else avatar_bytes_ok rest
+    }
+
 /// An avatar is either empty or a plain https URL; anything else is dropped.
+/// The page still renders it as a URL (and Oak escapes text), but the contract
+/// does not hand out characters that could break an attribute.
 pub def sanitize_avatar (s : String) : String :=
     let t : String := String.trim s in
     if String.is_empty t then ""
     else if Bool.not (String.starts_with "https://" t) then ""
     else if String.length t > avatar_max then ""
-    else if String.contains t " " then ""
+    else if Bool.not (avatar_bytes_ok (String.to_list t)) then ""
     else t
 
 pub def identity_valid (i : Identity) : Bool :=

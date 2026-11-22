@@ -29,10 +29,11 @@ use oauth::http_client {OauthHttp, OauthHttp.send_get}
 use oauth::errors {OauthError, OauthError.to_string}
 use jsonwebtoken::jwt {Jwt, Jwt.parse, Jwt.verify}
 use jsonwebtoken::verifier {JwtVerifier}
-use atproto_identity::identity {Atp.did_document_url, Atp.did_document, Atp.DidDocument}
+use atproto_identity::identity {
+    Atp.did_document_url, Atp.did_document, Atp.DidDocument, Atp.is_handle, Atp.well_known_did
+}
 use atproto_oauth::oauth {
-    Atp.resource_metadata, Atp.as_metadata, Atp.AsMetadata, Atp.is_secure_url,
-    Atp.origin_of
+    Atp.resource_metadata, Atp.as_metadata, Atp.AsMetadata, Atp.origin_of
 }
 use atproto_oauth::dpop {Atp.htu, Atp.dpop_ath}
 use atproto_oauth::client_metadata {Atp.jwk_xy, Atp.jwk_thumbprint, Atp.jwk_is_public}
@@ -93,11 +94,13 @@ def now_s : IO I64 := do {
 
 def abs_i64 (x : I64) : I64 := if x < 0 then 0 - x else x
 
+def is_https (u : String) : Bool := String.starts_with "https://" u
+
 def body_text (r : Response) : String :=
     match r.body {
         Body.text s => s,
         Body.empty => "",
-        Body.bytes _ => "",
+        Body.bytes bs => String.from_list bs,
         Body.stream _ => "",
         Body.form _ => ""
     }
@@ -150,7 +153,9 @@ def require_opt (what : String) (v : Option String) : Result String String :=
     }
 
 def fetch_text (d : AtpDeps) (url : String) : IO (Result String String) := do {
-    match Uri.parse url {
+    if Bool.not (is_https url)
+    then IO.pure (Result.err "an upstream URL is not https")
+    else match Uri.parse url {
         Result.err e => IO.pure (Result.err (String.concat "bad URL: " e)),
         Result.ok u => do {
             let r <- OauthHttp.send_get d.http u Headers.empty;
@@ -199,11 +204,32 @@ def handle_of (aliases : List String) : Option String :=
             else handle_of rest
     }
 
-def did_display (doc : Atp.DidDocument) (did : String) : String :=
+/// The display name: a handle only if the handle's own well-known document
+/// points back at this DID (AT Protocol's reverse check). A DID document's
+/// `alsoKnownAs` is self-asserted, so using it unchecked lets any DID display
+/// as someone else's handle.
+def verified_display (d : AtpDeps) (doc : Atp.DidDocument) (did : String) : IO String := do {
     match handle_of doc.also_known_as {
-        Option.some h => h,
-        Option.none => did
+        Option.none => IO.pure did,
+        Option.some handle0 =>
+            let handle : String := handle0 in
+            if Bool.not (Atp.is_handle handle)
+            then IO.pure did
+            else do {
+                let url : String := String.concat_list ["https://", handle, "/.well-known/atproto-did"];
+                let r <- fetch_text d url;
+                match r {
+                    Result.err _ => IO.pure did,
+                    Result.ok body =>
+                        match Atp.well_known_did body {
+                            Result.err _ => IO.pure did,
+                            Result.ok claimed =>
+                                if claimed == did then IO.pure handle else IO.pure did
+                        }
+                }
+            }
     }
+}
 
 // ── the pipeline ─────────────────────────────────────────────────────
 
@@ -305,8 +331,6 @@ def check_proof_claims (d : AtpDeps) (request_url : String) (token : String)
                                                                     if dup
                                                                     then IO.pure (Result.err "the proof has been replayed")
                                                                     else do {
-                                                                let _ <- Ref.set d.replay
-                                                                    (List.cons (Pair.pair key (I64.add now (I64.mul d.skew 2i64))) kept);
                                                                 let jwks : Json :=
                                                                     Json.make_object_pairs
                                                                         [Pair.pair "keys"
@@ -315,7 +339,11 @@ def check_proof_claims (d : AtpDeps) (request_url : String) (token : String)
                                                                 let verified <- Jwt.verify d.verifier jwks proof;
                                                                 match verified {
                                                                     Result.err _ => IO.pure (Result.err "the proof signature is not valid"),
-                                                                    Result.ok _ => check_token d token jkt
+                                                                    Result.ok _ => do {
+                                                                        let _ <- Ref.set d.replay
+                                                                            (List.cons (Pair.pair key (I64.add now (I64.mul d.skew 2i64))) kept);
+                                                                        check_token d token jkt
+                                                                    }
                                                                 }
                                                                     }
                                                             }
@@ -335,7 +363,7 @@ def token_claims (t : Jwt) (now : I64) (skew : I64) (jkt : String)
         Result.err e => Result.err e,
         Result.ok iss0 =>
             let iss : String := iss0 in
-            if Bool.not (Atp.is_secure_url iss) || Bool.not (iss == Atp.origin_of iss)
+            if Bool.not (is_https iss) || Bool.not (iss == Atp.origin_of iss)
             then Result.err "the token issuer is not a secure origin"
             else
                 match require_opt "the token has no sub" (claim_str t "sub") {
@@ -396,8 +424,9 @@ def check_token (d : AtpDeps) (token : String) (jkt : String) : IO (Result Strin
                                             Option.some p => p,
                                             Option.none => ""
                                         };
+                                    let display <- verified_display d doc sub;
                                     let identity : Identity :=
-                                        identity_make Provider.atproto sub (did_display doc sub) "";
+                                        identity_make Provider.atproto sub display "";
                                     IO.pure (Result.ok
                                         { identity := identity, did := sub, issuer := iss, pds := pds
                                           : VerifiedAtp })
@@ -427,7 +456,7 @@ def check_did_chain (d : AtpDeps) (did : String) (iss : String) (token : String)
                         Option.none => IO.pure (Result.err "the DID document names no PDS"),
                         Option.some pds0 =>
                             let pds : String := pds0 in
-                            if Bool.not (Atp.is_secure_url pds)
+                            if Bool.not (is_https pds)
                             then IO.pure (Result.err "the PDS endpoint is not secure")
                             else do {
                                 let prm_url : String := String.concat pds "/.well-known/oauth-protected-resource";
@@ -470,7 +499,7 @@ def check_did_chain (d : AtpDeps) (did : String) (iss : String) (token : String)
                                                                         Option.none => IO.pure (Result.err "the AS names no jwks_uri"),
                                                                         Option.some uri0 =>
                                                                             let uri : String := uri0 in
-                                                                            if Bool.not (Atp.is_secure_url uri)
+                                                                            if Bool.not (is_https uri)
                                                                             then IO.pure (Result.err "the jwks_uri is not secure")
                                                                             else do {
                                                                                 match Jwt.parse token {

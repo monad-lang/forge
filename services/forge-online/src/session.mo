@@ -20,8 +20,8 @@ use moon::session_crypto {SessionConfig.with_crypto_ids}
 use moon::csrf {Csrf.token}
 use forge_online::identity {
     Identity, identity_make, identity_provider, identity_subject, identity_display,
-    identity_avatar, provider_of, provider_name, whoami_make, whoami_encode, Whoami,
-    whoami_identity, whoami_expires_at, whoami_csrf
+    identity_avatar, identity_valid, provider_of, provider_name, whoami_make,
+    whoami_encode, Whoami, whoami_identity, whoami_expires_at, whoami_csrf
 }
 use lib::config {Config}
 
@@ -107,6 +107,9 @@ def forge_session_identity (s : Session) : Result String Identity :=
 /// fields, and the Set-Cookie pairs. Returns the `Whoami` the client renders.
 pub def forge_sessions_sign_in (fs : ForgeSessions) (id : Identity)
     : IO (Result String (Pair Whoami (List (Pair String String)))) := do {
+    if Bool.not (identity_valid id)
+    then IO.pure (Result.err "identity is not valid (empty or oversized subject/display)")
+    else do {
     let r <- SessionStore.begin_checked fs.store;
     match r {
         Result.err e => IO.pure (Result.err e),
@@ -124,6 +127,7 @@ pub def forge_sessions_sign_in (fs : ForgeSessions) (id : Identity)
                 }
             }
         }
+    }
     }
 }
 

@@ -106,10 +106,19 @@ pub def strip_trailing_slash (s : String) : String :=
     then String.slice s 0 (String.length s - 1)
     else s
 
+#[terminating]
+def loopback_prefix (prefix : String) (s : String) : Bool :=
+    if Bool.not (String.starts_with prefix s) then false
+    else
+        let rest : String := String.drop (String.length prefix) s in
+        String.is_empty rest || String.starts_with ":" rest || String.starts_with "/" rest
+
+/// Loopback only at a host boundary: `http://localhost.example.com` is not
+/// loopback, or the dev provider would open on a public host.
 pub def is_loopback_origin (s : String) : Bool :=
-    String.starts_with "http://127.0.0.1" s
-        || String.starts_with "http://localhost" s
-        || String.starts_with "http://[::1]" s
+    loopback_prefix "http://127.0.0.1" s
+        || loopback_prefix "http://localhost" s
+        || loopback_prefix "http://[::1]" s
 
 def origin_shape_ok (s : String) : Bool :=
     let scheme : Bool :=
@@ -119,12 +128,12 @@ def origin_shape_ok (s : String) : Bool :=
         && Bool.not (String.contains s "#")
         && Bool.not (String.contains s " ")
 
-/// A `List Provider` in the order the overlay shows its buttons.
-def provider_list (dev : Bool) (discord : Bool) : List Provider :=
-    let ps0 : List Provider := [Provider.atproto] in
-    let ps1 : List Provider := if discord then List.append ps0 [Provider.discord] else ps0 in
-    let ps2 : List Provider := List.append ps1 [Provider.steam] in
-    if dev then List.append ps2 [Provider.dev] else ps2
+/// A `List Provider` in the order the overlay shows its buttons. Only
+/// providers whose start/callback routes exist are advertised: Discord and
+/// Steam join this list when their adapters land (a button for a 404 is worse
+/// than no button).
+def provider_list (dev : Bool) (_discord : Bool) : List Provider :=
+    if dev then [Provider.atproto, Provider.dev] else [Provider.atproto]
 
 pub def load : IO (Result String Config) := do {
     let port_s <- env_or "FORGE_PORT" "8080";

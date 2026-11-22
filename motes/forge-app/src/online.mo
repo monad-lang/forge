@@ -1,8 +1,9 @@
 // forge-app's browser-side online controller (web-only).
 //
 // M0 skeleton: it imports the atproto-monad surface the sign-in overlay will
-// drive, so the wasm build proves the browser graph links. The model, effects
-// and view arrive in M2.
+// drive. `monad check` typechecks it against the web target; it joins the wasm
+// link when M2 wires it into `web.mo`. (The web bin itself currently hits a
+// pre-existing `oak_wasm` IR-elaboration error, unrelated to this file.)
 
 use atproto_common::jws {Atp.s256}
 use atproto_oauth::client_metadata {Atp.ClientConfig}

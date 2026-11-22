@@ -60,6 +60,19 @@ def test_sanitize_caps_length : Bool :=
     String.length (sanitize_display long) == display_max
 
 #[test]
+def test_sanitize_cap_keeps_whole_characters : Bool :=
+    let a : String := String.repeat "a" 63 in
+    let e : String := String.from_list [195, 169] in
+    let s : String := sanitize_display (String.concat a e) in
+    Bool.not (String.is_empty s) && String.length s <= display_max
+
+#[test]
+def test_avatar_rejects_control_characters : Bool :=
+    let tab : String := String.from_list [9] in
+    let url : String := String.concat_list ["https://x/a", tab, "b"] in
+    sanitize_avatar url == ""
+
+#[test]
 def test_avatar_must_be_https : Bool :=
     sanitize_avatar "https://cdn.example/a.png" == "https://cdn.example/a.png"
         && sanitize_avatar "http://cdn.example/a.png" == ""
