@@ -2,6 +2,7 @@
 members = [
   "motes/*",
   "games/*",
+  "services/*",
 ]
 
 [workspace.dependencies.forge_app]
@@ -72,3 +73,75 @@ git = "https://github.com/monad-lang/monad.git"
 # Keep current: `monad update` (README.md, "Keeping the monad pin current").
 branch = "main"
 subdir = "motes/web_wasm"
+
+# Pure JSON, used by the online contract (`motes/forge-online`) and by the
+# auth broker. Same monad repository and pin as the web motes.
+[workspace.dependencies.json]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/json"
+
+# The online contract (pure) and the auth broker (native bin). The broker also
+# needs the monad server/client stack, which lives in the same repository and
+# pin as `web_wasm`.
+[workspace.dependencies.forge_online]
+path = "motes/forge-online"
+
+[workspace.dependencies.forge_online_server]
+path = "services/forge-online"
+
+[workspace.dependencies.moon]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/moon"
+
+[workspace.dependencies.http]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/http"
+
+[workspace.dependencies.oauth]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/oauth"
+
+[workspace.dependencies.jsonwebtoken]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/jsonwebtoken"
+
+[workspace.dependencies.crypto]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/crypto"
+
+[workspace.dependencies.moose]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/moose"
+
+# AT Protocol OAuth (bumped to the monad aaf39e36 pin in the upstream repo).
+[workspace.dependencies.atproto_common]
+git = "https://github.com/monad-lang/atproto-monad.git"
+branch = "main"
+subdir = "motes/atproto_common"
+
+[workspace.dependencies.atproto_identity]
+git = "https://github.com/monad-lang/atproto-monad.git"
+branch = "main"
+subdir = "motes/atproto_identity"
+
+[workspace.dependencies.atproto_oauth]
+git = "https://github.com/monad-lang/atproto-monad.git"
+branch = "main"
+subdir = "motes/atproto_oauth"
+
+[workspace.dependencies.atproto_repo]
+git = "https://github.com/monad-lang/atproto-monad.git"
+branch = "main"
+subdir = "motes/atproto_repo"
+
+[workspace.dependencies.atproto_web]
+git = "https://github.com/monad-lang/atproto-monad.git"
+branch = "main"
+subdir = "motes/atproto_web"

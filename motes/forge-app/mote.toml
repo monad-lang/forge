@@ -51,3 +51,15 @@ workspace = true
 
 [dependencies.web_wasm]
 workspace = true
+
+[dependencies.forge_online]
+workspace = true
+
+[dependencies.atproto_common]
+workspace = true
+
+[dependencies.atproto_oauth]
+workspace = true
+
+[dependencies.atproto_web]
+workspace = true

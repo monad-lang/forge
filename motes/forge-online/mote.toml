@@ -1,0 +1,7 @@
+[mote]
+name = "forge_online"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.json]
+workspace = true

@@ -1,0 +1,38 @@
+[mote]
+name = "forge_online_server"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.forge_online]
+workspace = true
+
+[dependencies.json]
+workspace = true
+
+[dependencies.moon]
+workspace = true
+
+[dependencies.http]
+workspace = true
+
+[dependencies.oauth]
+workspace = true
+
+[dependencies.jsonwebtoken]
+workspace = true
+
+[dependencies.crypto]
+workspace = true
+
+[dependencies.moose]
+workspace = true
+
+[dependencies.atproto_oauth]
+workspace = true
+
+[dependencies.atproto_identity]
+workspace = true
+
+[[bin]]
+name = "forge-online"
+path = "src/main.mo"

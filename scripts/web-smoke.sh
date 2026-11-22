@@ -14,8 +14,9 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$root/scripts/lock-rev.sh"
 monad_src="${MONAD_SRC:-$root/../monad}"
-rev="$(sed -n 's/^git_commit = "\([0-9a-f]*\)"$/\1/p' "$root/mote.lock" | head -n 1)"
+rev="$(lock_monad_rev "$root/mote.lock")"
 
 # smoke APP SCRIPT: build APP, stage the stubs and SCRIPT, run all modes.
 smoke() {

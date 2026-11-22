@@ -25,6 +25,10 @@ in
     llvm
     clang
     boehmgc-static
+    # The online broker verifies atproto tokens and provider signatures with
+    # `jsonwebtoken`/`crypto`, which link OpenSSL (`-lcrypto`).
+    openssl
+    pkg-config
   ];
 
   # The web profile (`--target wasm32-unknown-unknown`) compiles the C

@@ -24,6 +24,7 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$root/scripts/lock-rev.sh"
 monad_src="${MONAD_SRC:-$root/../monad}"
 monad_bin="${MONAD:-monad}"
 app="${1:-demo}"
@@ -34,7 +35,7 @@ case "$app" in
 esac
 out="$root/target/web/$app"
 
-rev="$(sed -n 's/^git_commit = "\([0-9a-f]*\)"$/\1/p' "$root/mote.lock" | head -n 1)"
+rev="$(lock_monad_rev "$root/mote.lock")"
 [ -n "$rev" ] || { echo "web-build: no web_wasm commit in mote.lock" >&2; exit 1; }
 [ -d "$monad_src/.git" ] \
     || { echo "web-build: no monad checkout at $monad_src (set MONAD_SRC)" >&2; exit 1; }
