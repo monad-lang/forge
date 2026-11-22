@@ -34,6 +34,14 @@
 // - Context loss: `webgl_submit` draws nothing while the context is lost,
 //   and on the first frame after it returns it relinks the programs and
 //   re-uploads every asset (everything a context owned died with it).
+// - Shadows: the first frame whose plan asks for them (`plan_shadows`)
+//   creates the shadow map -- a depth texture of the light's `map_size`, a
+//   framebuffer and a position-only program. If any of it is missing
+//   (WebGL1 without `WEBGL_depth_texture`, an incomplete framebuffer) the
+//   renderer remembers that and draws lit without shadows. Each shadowed
+//   frame renders `plan_casters` depth-only into the map, then the main pass
+//   samples it on texture unit 1. Frames without shadows issue no shadow
+//   calls at all. A restored context tries again.
 
 use std::ref {Ref, Ref.new, Ref.get, Ref.set, Ref.update}
 use std::map {HashMap, Map}
@@ -43,22 +51,24 @@ use web_wasm::types {Node}
 use web_wasm::dom {Dom.append, Dom.create, Dom.root, Dom.set_attr}
 use web_wasm::canvas {Canvas.fit, Canvas.client_size}
 use web_wasm::gl {
-    GlContext, GlProgram, GlBuffer, GlTexture, GlUniform, GlImage,
+    GlContext, GlProgram, GlBuffer, GlTexture, GlUniform, GlImage, GlFramebuffer, GlAttachment,
     GlOptions, GlOptions.default, GlBufferTarget, GlUsage, GlAttribType, GlPrimitive,
     GlTextureTarget, GlFilter, GlWrap, GlClear, GlCap, GlBlendFactor, GlCompare,
     Gl.context, Gl.is_lost, Gl.version, Gl.drawing_buffer_size, Gl.has_uint_indices,
     Gl.program, Gl.use_program, Gl.attrib_location, Gl.uniform_location,
-    Gl.uniform4f, Gl.uniform1i,
+    Gl.uniform4f, Gl.uniform3f, Gl.uniform1f, Gl.uniform1i,
     Gl.create_buffer, Gl.bind_buffer, Gl.delete_buffer,
     Gl.vertex_attrib_pointer, Gl.enable_vertex_attrib,
     Gl.viewport, Gl.clear_color, Gl.clear, Gl.enable, Gl.blend_func, Gl.depth_func,
-    Gl.draw_elements,
+    Gl.draw_elements, Gl.disable, Gl.color_mask, Gl.polygon_offset,
+    Gl.create_framebuffer, Gl.bind_framebuffer, Gl.bind_default_framebuffer, Gl.delete_framebuffer,
+    Gl.framebuffer_texture, Gl.framebuffer_complete, Gl.tex_image_depth,
     Gl.create_texture, Gl.bind_texture, Gl.delete_texture, Gl.active_texture,
     Gl.tex_filter, Gl.tex_wrap, Gl.flip_y, Gl.tex_image_from_image,
     GlImage.load, GlImage.poll,
     Gl.buffer_data_f32, Gl.buffer_data_i32, Gl.uniform_matrix4, Gl.f32_buf, Gl.i32_buf,
 }
-use forge_math::{Mat4, mat4_to_list}
+use forge_math::{Mat4, mat4_to_list, Vec3, f64_of_i64}
 use forge_render::{
     Color, color_r, color_g, color_b, color_a,
     MeshData, mesh_vertices, mesh_indices, mesh_index_count,
@@ -66,11 +76,14 @@ use forge_render::{
     TextureDesc, texture_url, texture_is_linear, texture_repeats,
     Assets, assets_mesh, assets_texture, assets_mesh_ids, assets_texture_ids,
     DrawCall, draw_call_mesh, draw_call_shader, draw_call_tint, draw_call_texture,
-    draw_call_model,
-    FramePlan, plan_clears, plan_clear_color, plan_view, plan_projection, plan_draws
+    draw_call_model, draw_call_unlit,
+    FramePlan, plan_clears, plan_clear_color, plan_view, plan_projection, plan_draws, plan_light,
+    plan_shadows, plan_light_view_projection, plan_casters,
+    Light, light_toward, light_diffuse, light_ambient, light_map_size
 }
 use lib::shaders {
     vertex_source, flat_fragment_source, textured_fragment_source,
+    depth_vertex_source, depth_fragment_source,
     vertex_stride_bytes, uv_offset_bytes, normal_offset_bytes
 }
 
@@ -116,6 +129,18 @@ def set_color (ctx : GlContext) (s : Slot) (c : Color) : IO Unit :=
         Slot.slot_none => IO.pure unit
     }
 
+def set_float (ctx : GlContext) (s : Slot) (x : F64) : IO Unit :=
+    match s {
+        Slot.slot_some u => Gl.uniform1f ctx u x,
+        Slot.slot_none => IO.pure unit
+    }
+
+def set_vec3 (ctx : GlContext) (s : Slot) (v : Vec3) : IO Unit :=
+    match s {
+        Slot.slot_some u => Gl.uniform3f ctx u v.x v.y v.z,
+        Slot.slot_none => IO.pure unit
+    }
+
 def set_int (ctx : GlContext) (s : Slot) (x : I64) : IO Unit :=
     match s {
         Slot.slot_some u => Gl.uniform1i ctx u x,
@@ -134,7 +159,15 @@ struct ProgramInfo {
     u_view : Slot,
     u_proj : Slot,
     u_tint : Slot,
-    u_tex : Slot
+    u_tex : Slot,
+    u_light_dir : Slot,
+    u_light_color : Slot,
+    u_ambient : Slot,
+    u_unlit : Slot,
+    u_light_vp : Slot,
+    u_shadow : Slot,
+    u_shadows : Slot,
+    u_shadow_texel : Slot
 }
 
 instance Copy ProgramInfo {
@@ -143,10 +176,14 @@ instance Copy ProgramInfo {
 
 def program_info_new (program : GlProgram) (a_position : I64) (a_uv : I64) (a_normal : I64)
     (u_model : Slot) (u_view : Slot) (u_proj : Slot) (u_tint : Slot) (u_tex : Slot)
+    (u_light_dir : Slot) (u_light_color : Slot) (u_ambient : Slot) (u_unlit : Slot)
+    (u_light_vp : Slot) (u_shadow : Slot) (u_shadows : Slot) (u_shadow_texel : Slot)
     : ProgramInfo :=
     { program := program, a_position := a_position, a_uv := a_uv, a_normal := a_normal,
       u_model := u_model, u_view := u_view, u_proj := u_proj, u_tint := u_tint,
-      u_tex := u_tex
+      u_tex := u_tex, u_light_dir := u_light_dir, u_light_color := u_light_color,
+      u_ambient := u_ambient, u_unlit := u_unlit, u_light_vp := u_light_vp,
+      u_shadow := u_shadow, u_shadows := u_shadows, u_shadow_texel := u_shadow_texel
       : ProgramInfo }
 
 /// Resolve every location once, at link time (`getUniformLocation` is a
@@ -160,9 +197,19 @@ def program_info (ctx : GlContext) (p : GlProgram) : IO ProgramInfo := do {
     let u_proj <- Gl.uniform_location ctx p "u_proj";
     let u_tint <- Gl.uniform_location ctx p "u_tint";
     let u_tex <- Gl.uniform_location ctx p "u_tex";
+    let u_light_dir <- Gl.uniform_location ctx p "u_light_dir";
+    let u_light_color <- Gl.uniform_location ctx p "u_light_color";
+    let u_ambient <- Gl.uniform_location ctx p "u_ambient";
+    let u_unlit <- Gl.uniform_location ctx p "u_unlit";
+    let u_light_vp <- Gl.uniform_location ctx p "u_light_vp";
+    let u_shadow <- Gl.uniform_location ctx p "u_shadow";
+    let u_shadows <- Gl.uniform_location ctx p "u_shadows";
+    let u_shadow_texel <- Gl.uniform_location ctx p "u_shadow_texel";
     IO.pure (program_info_new p (index_of a_position) (index_of a_uv) (index_of a_normal)
                 (slot_of u_model) (slot_of u_view) (slot_of u_proj) (slot_of u_tint)
-                (slot_of u_tex))
+                (slot_of u_tex) (slot_of u_light_dir) (slot_of u_light_color)
+                (slot_of u_ambient) (slot_of u_unlit) (slot_of u_light_vp)
+                (slot_of u_shadow) (slot_of u_shadows) (slot_of u_shadow_texel))
 }
 
 def program_linked (ctx : GlContext) (p : GlProgram) : IO (Result String ProgramInfo) := do {
@@ -171,8 +218,12 @@ def program_linked (ctx : GlContext) (p : GlProgram) : IO (Result String Program
 }
 
 /// Compile + link one program; the error is the driver's info log.
-def build_program (ctx : GlContext) (fragment : String) : IO (Result String ProgramInfo) := do {
-    let built <- Gl.program ctx vertex_source fragment;
+def build_program (ctx : GlContext) (fragment : String) : IO (Result String ProgramInfo) :=
+    build_program_from ctx vertex_source fragment
+
+def build_program_from (ctx : GlContext) (vertex : String) (fragment : String)
+    : IO (Result String ProgramInfo) := do {
+    let built <- Gl.program ctx vertex fragment;
     match built {
         Result.err e => IO.pure (Result.err e),
         Result.ok p => program_linked ctx p,
@@ -243,6 +294,37 @@ def gpu_texture (texture : GlTexture) (image : GlImage) (state : I64) (linear : 
     { texture := texture, image := image, state := state, linear := linear, repeats := repeats
       : GpuTexture }
 
+// ── Shadow map state ────────────────────────────────────────────────
+
+/// The shadow map's GL objects: the depth texture, the framebuffer it is
+/// attached to, its size in texels, and the depth-only program.
+struct ShadowMap {
+    framebuffer : GlFramebuffer,
+    texture : GlTexture,
+    size : I64,
+    depth : ProgramInfo
+}
+
+instance Copy ShadowMap {
+    def copy (m : ShadowMap) : Pair ShadowMap ShadowMap := Pair.pair m m
+}
+
+def shadow_map (framebuffer : GlFramebuffer) (texture : GlTexture) (size : I64) (depth : ProgramInfo)
+    : ShadowMap :=
+    { framebuffer := framebuffer, texture := texture, size := size, depth := depth : ShadowMap }
+
+/// Not tried yet (no frame has asked for shadows on this context), tried
+/// and unavailable, or ready.
+type ShadowState {
+    shadow_untried,
+    shadow_failed,
+    shadow_ready (m : ShadowMap)
+}
+
+instance Copy ShadowState {
+    def copy (s : ShadowState) : Pair ShadowState ShadowState := Pair.pair s s
+}
+
 // ── The renderer ────────────────────────────────────────────────────
 
 /// A WebGL backend bound to one canvas. `Copy` (identity): it is a handle to
@@ -254,7 +336,8 @@ pub struct WebGlRenderer {
     meshes : Ref (HashMap I64 GpuMesh),
     textures : Ref (HashMap I64 GpuTexture),
     assets : Ref Assets,
-    lost : Ref Bool
+    lost : Ref Bool,
+    shadow : Ref ShadowState
 }
 
 pub instance Copy WebGlRenderer {
@@ -263,9 +346,9 @@ pub instance Copy WebGlRenderer {
 
 def renderer_new (canvas : Node) (ctx : GlContext) (programs : Ref Programs)
     (meshes : Ref (HashMap I64 GpuMesh)) (textures : Ref (HashMap I64 GpuTexture))
-    (assets : Ref Assets) (lost : Ref Bool) : WebGlRenderer :=
+    (assets : Ref Assets) (lost : Ref Bool) (shadow : Ref ShadowState) : WebGlRenderer :=
     { canvas := canvas, ctx := ctx, programs := programs, meshes := meshes,
-      textures := textures, assets := assets, lost := lost
+      textures := textures, assets := assets, lost := lost, shadow := shadow
       : WebGlRenderer }
 
 // ── Uploads ─────────────────────────────────────────────────────────
@@ -466,7 +549,8 @@ def finish_setup (canvas : Node) (ctx : GlContext) (assets : Assets) (ps : Progr
     let textures <- Ref.new (Map.empty : HashMap I64 GpuTexture);
     let held <- Ref.new assets;
     let lost <- Ref.new false;
-    let r : WebGlRenderer := renderer_new canvas ctx programs meshes textures held lost;
+    let shadow <- Ref.new ShadowState.shadow_untried;
+    let r : WebGlRenderer := renderer_new canvas ctx programs meshes textures held lost shadow;
     let _ <- init_state ctx;
     let _ <- upload_all r assets;
     IO.pure (Result.ok r)
@@ -579,6 +663,7 @@ def rebuilt (r : WebGlRenderer) (ps : Programs) : IO Bool := do {
     let _ <- init_state r.ctx;
     let _ <- upload_all r assets;
     let _ <- Ref.set r.lost false;
+    let _ <- Ref.set r.shadow ShadowState.shadow_untried;
     IO.pure true
 }
 
@@ -640,6 +725,7 @@ def issue (r : WebGlRenderer) (info : ProgramInfo) (d : DrawCall) (g : GpuMesh) 
     let _ <- Gl.use_program ctx info.program;
     let _ <- set_matrix ctx info.u_model (draw_call_model d);
     let _ <- set_color ctx info.u_tint (draw_call_tint d);
+    let _ <- set_float ctx info.u_unlit (if draw_call_unlit d then 1.0 else 0.0);
     let _ <- Gl.bind_buffer ctx GlBufferTarget.array g.vbo;
     let _ <- Gl.bind_buffer ctx GlBufferTarget.element_array g.ibo;
     let _ <- attribute ctx info.a_position 3 0;
@@ -697,12 +783,15 @@ def clear_to (ctx : GlContext) (c : Color) : IO Unit := do {
     Gl.clear ctx mask
 }
 
-/// The camera is per FRAME, so each program gets view and projection once,
+/// The camera and the light are per FRAME, so each program gets them once,
 /// not once per draw.
-def prime (ctx : GlContext) (info : ProgramInfo) (view : Mat4) (projection : Mat4) : IO Unit := do {
+def prime (ctx : GlContext) (info : ProgramInfo) (view : Mat4) (projection : Mat4) (light : Light) : IO Unit := do {
     let _ <- Gl.use_program ctx info.program;
     let _ <- set_matrix ctx info.u_view view;
-    set_matrix ctx info.u_proj projection
+    let _ <- set_matrix ctx info.u_proj projection;
+    let _ <- set_vec3 ctx info.u_light_dir (light_toward light);
+    let _ <- set_vec3 ctx info.u_light_color (light_diffuse light);
+    set_float ctx info.u_ambient (light_ambient light)
 }
 
 def live_frame (r : WebGlRenderer) (plan : FramePlan) : IO I64 := do {
@@ -713,14 +802,202 @@ def live_frame (r : WebGlRenderer) (plan : FramePlan) : IO I64 := do {
 }
 
 def live_frame_with (r : WebGlRenderer) (ps : Programs) (plan : FramePlan) : IO I64 := do {
+    let shadow <- shadow_for r plan;
+    live_frame_lit r ps plan shadow
+}
+
+def live_frame_lit (r : WebGlRenderer) (ps : Programs) (plan : FramePlan) (shadow : ShadowState)
+    : IO I64 := do {
     let ctx : GlContext := r.ctx;
+    let _ <- shadow_pass r ps plan shadow;
     let size <- Gl.drawing_buffer_size ctx;
     let _ <- viewport_to ctx size;
     let _ <- if plan_clears plan then clear_to ctx (plan_clear_color plan) else IO.pure unit;
-    let _ <- prime ctx ps.flat (plan_view plan) (plan_projection plan);
-    let _ <- prime ctx ps.textured (plan_view plan) (plan_projection plan);
+    let _ <- prime ctx ps.flat (plan_view plan) (plan_projection plan) (plan_light plan);
+    let _ <- prime ctx ps.textured (plan_view plan) (plan_projection plan) (plan_light plan);
     draw_go r ps (plan_draws plan) 0
 }
+
+// ── Shadows ─────────────────────────────────────────────────────────
+
+def shadow_store (r : WebGlRenderer) (s : ShadowState) : IO ShadowState := do {
+    let _ <- Ref.set r.shadow s;
+    IO.pure s
+}
+
+/// Undo a half-built shadow map.
+def shadow_give_up (r : WebGlRenderer) (fb : GlFramebuffer) (t : GlTexture) : IO ShadowState := do {
+    let ctx : GlContext := r.ctx;
+    let _ <- Gl.bind_default_framebuffer ctx;
+    let _ <- Gl.delete_framebuffer ctx fb;
+    let _ <- Gl.delete_texture ctx t;
+    IO.pure ShadowState.shadow_failed
+}
+
+def shadow_with_program (r : WebGlRenderer) (fb : GlFramebuffer) (t : GlTexture) (size : I64)
+    : IO ShadowState := do {
+    let built <- build_program_from r.ctx depth_vertex_source depth_fragment_source;
+    match built {
+        Result.err _ => shadow_give_up r fb t,
+        Result.ok depth => IO.pure (ShadowState.shadow_ready (shadow_map fb t size depth)),
+    }
+}
+
+def shadow_attach (r : WebGlRenderer) (fb : GlFramebuffer) (t : GlTexture) (size : I64)
+    : IO ShadowState := do {
+    let ctx : GlContext := r.ctx;
+    let _ <- Gl.bind_framebuffer ctx fb;
+    let _ <- Gl.framebuffer_texture ctx GlAttachment.depth t;
+    let complete <- Gl.framebuffer_complete ctx;
+    let _ <- Gl.bind_default_framebuffer ctx;
+    if complete then shadow_with_program r fb t size else shadow_give_up r fb t
+}
+
+def shadow_framebuffer (r : WebGlRenderer) (t : GlTexture) (size : I64) : IO ShadowState := do {
+    let fb <- Gl.create_framebuffer r.ctx;
+    shadow_attach r fb t size
+}
+
+/// Allocate `t` as a `size`^2 depth texture (nearest, clamped: depth
+/// textures take no filtering).
+def shadow_allocate (r : WebGlRenderer) (t : GlTexture) (size : I64) : IO ShadowState := do {
+    let ctx : GlContext := r.ctx;
+    let _ <- Gl.bind_texture ctx GlTextureTarget.texture_2d t;
+    let _ <- Gl.tex_filter ctx GlTextureTarget.texture_2d GlFilter.nearest GlFilter.nearest;
+    let _ <- Gl.tex_wrap ctx GlTextureTarget.texture_2d GlWrap.clamp_to_edge GlWrap.clamp_to_edge;
+    let ok <- Gl.tex_image_depth ctx size size;
+    if ok
+    then shadow_framebuffer r t size
+    else do {
+        let _ <- Gl.delete_texture ctx t;
+        IO.pure ShadowState.shadow_failed
+    }
+}
+
+def shadow_create (r : WebGlRenderer) (size : I64) : IO ShadowState := do {
+    let t <- Gl.create_texture r.ctx;
+    let made <- shadow_allocate r t size;
+    shadow_store r made
+}
+
+def shadow_settle (r : WebGlRenderer) (size : I64) (s : ShadowState) : IO ShadowState :=
+    match s {
+        ShadowState.shadow_untried => shadow_create r size,
+        ShadowState.shadow_failed => IO.pure ShadowState.shadow_failed,
+        ShadowState.shadow_ready m => IO.pure (ShadowState.shadow_ready m)
+    }
+
+/// This frame's shadow map: created on the first frame that asks. A frame
+/// that does not ask gets `shadow_untried` (nothing to draw), whatever the
+/// stored state is.
+def shadow_for (r : WebGlRenderer) (plan : FramePlan) : IO ShadowState :=
+    if plan_shadows plan
+    then do {
+        let s <- Ref.get r.shadow;
+        shadow_settle r (light_map_size (plan_light plan)) s
+    }
+    else IO.pure ShadowState.shadow_untried
+
+/// One caster into the shadow map (the depth program is in use).
+def depth_issue (ctx : GlContext) (info : ProgramInfo) (d : DrawCall) (g : GpuMesh) : IO I64 := do {
+    let _ <- set_matrix ctx info.u_model (draw_call_model d);
+    let _ <- Gl.bind_buffer ctx GlBufferTarget.array g.vbo;
+    let _ <- Gl.bind_buffer ctx GlBufferTarget.element_array g.ibo;
+    let _ <- attribute ctx info.a_position 3 0;
+    let _ <- Gl.draw_elements ctx GlPrimitive.triangles g.count 0;
+    IO.pure 1
+}
+
+def depth_one (r : WebGlRenderer) (info : ProgramInfo) (d : DrawCall) : IO I64 := do {
+    let table <- Ref.get r.meshes;
+    match Map.lookup (draw_call_mesh d) table {
+        Option.some g => depth_issue r.ctx info d g,
+        Option.none => IO.pure 0,
+    }
+}
+
+#[terminating]
+def depth_go (r : WebGlRenderer) (info : ProgramInfo) (draws : List DrawCall) (issued : I64) : IO I64 :=
+    match draws {
+        List.empty => IO.pure issued,
+        List.cons d rest => do {
+            let n <- depth_one r info d;
+            depth_go r info rest (I64.add issued n)
+        }
+    }
+
+/// Render the casters' depth from the light into the map: colour writes
+/// off, polygon offset on (against acne), then everything back for the
+/// main pass.
+def depth_pass (r : WebGlRenderer) (m : ShadowMap) (plan : FramePlan) : IO Unit := do {
+    let ctx : GlContext := r.ctx;
+    let info : ProgramInfo := m.depth;
+    let _ <- Gl.bind_framebuffer ctx m.framebuffer;
+    let _ <- Gl.viewport ctx 0 0 m.size m.size;
+    let _ <- Gl.color_mask ctx false false false false;
+    let mask : GlClear := { color := false, depth := true, stencil := false };
+    let _ <- Gl.clear ctx mask;
+    let _ <- Gl.enable ctx GlCap.polygon_offset_fill;
+    let _ <- Gl.polygon_offset ctx 2.0 4.0;
+    let _ <- Gl.use_program ctx info.program;
+    let _ <- set_matrix ctx info.u_light_vp (plan_light_view_projection plan);
+    let _ <- depth_go r info (plan_casters plan) 0;
+    let _ <- Gl.disable ctx GlCap.polygon_offset_fill;
+    let _ <- Gl.color_mask ctx true true true true;
+    Gl.bind_default_framebuffer ctx
+}
+
+/// The main pass's view of the map, per program.
+def prime_shadow (ctx : GlContext) (info : ProgramInfo) (m : ShadowMap) (light_vp : Mat4) : IO Unit := do {
+    let _ <- Gl.use_program ctx info.program;
+    let _ <- set_matrix ctx info.u_light_vp light_vp;
+    let _ <- set_int ctx info.u_shadow 1;
+    let _ <- set_float ctx info.u_shadow_texel (1.0 / f64_of_i64 m.size);
+    set_float ctx info.u_shadows 1.0
+}
+
+def prime_unshadowed (ctx : GlContext) (info : ProgramInfo) : IO Unit := do {
+    let _ <- Gl.use_program ctx info.program;
+    set_float ctx info.u_shadows 0.0
+}
+
+/// Depth pass, then the map on unit 1 (unit 0 stays the active one, for
+/// material textures).
+def shadowed (r : WebGlRenderer) (ps : Programs) (plan : FramePlan) (m : ShadowMap) : IO Unit := do {
+    let ctx : GlContext := r.ctx;
+    let _ <- depth_pass r m plan;
+    let _ <- Gl.active_texture ctx 1;
+    let _ <- Gl.bind_texture ctx GlTextureTarget.texture_2d m.texture;
+    let _ <- Gl.active_texture ctx 0;
+    let _ <- prime_shadow ctx ps.flat m (plan_light_view_projection plan);
+    prime_shadow ctx ps.textured m (plan_light_view_projection plan)
+}
+
+def unshadowed (r : WebGlRenderer) (ps : Programs) : IO Unit := do {
+    let _ <- prime_unshadowed r.ctx ps.flat;
+    prime_unshadowed r.ctx ps.textured
+}
+
+def shadow_pass (r : WebGlRenderer) (ps : Programs) (plan : FramePlan) (s : ShadowState) : IO Unit :=
+    match s {
+        ShadowState.shadow_ready m => shadowed r ps plan m,
+        ShadowState.shadow_untried => unshadowed r ps,
+        ShadowState.shadow_failed => unshadowed r ps
+    }
+
+/// Whether the last shadowed frame had a working shadow map (false before
+/// any frame asked, and when the context cannot make one).
+pub def webgl_shadows_ready (r : WebGlRenderer) : IO Bool := do {
+    let s <- Ref.get r.shadow;
+    IO.pure (shadow_is_ready s)
+}
+
+def shadow_is_ready (s : ShadowState) : Bool :=
+    match s {
+        ShadowState.shadow_ready _ => true,
+        ShadowState.shadow_untried => false,
+        ShadowState.shadow_failed => false
+    }
 
 def restored_frame (r : WebGlRenderer) (plan : FramePlan) : IO I64 := do {
     let ok <- webgl_rebuild r;

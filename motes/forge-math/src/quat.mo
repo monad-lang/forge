@@ -5,7 +5,7 @@
 
 use std::derive {}
 use lib::vec {Vec3, vec3, v3_cross, v3_add, v3_scale, v3_normalize, v3_dot}
-use lib::num {f64_sin, f64_cos, f64_sqrt}
+use lib::num {f64_sin, f64_cos, f64_sqrt, f64_approx_eps}
 
 #[derive Copy Clone Debug]
 pub struct Quat {
@@ -131,6 +131,13 @@ def test_quat_rotation_preserves_length : Bool :=
 def test_quat_same_rotation_ignores_sign : Bool :=
     let q : Quat := quat_from_z_angle 0.5 in
     quat_same_rotation q (quat (0.0 - q.x) (0.0 - q.y) (0.0 - q.z) (0.0 - q.w))
+
+/// A spin by a growing clock (`t * speed`, hours in) stays a unit rotation;
+/// the old trig reduction made it grow without bound past ~21pi.
+#[test]
+def test_quat_from_axis_angle_large_angle_is_unit : Bool :=
+    f64_approx_eps 0.000001 (quat_length (quat_from_axis_angle (vec3 0.0 1.0 0.0) 135.0)) 1.0
+        && f64_approx_eps 0.000001 (quat_length (quat_from_axis_angle (vec3 0.0 1.0 0.0) 54000.0)) 1.0
 
 #[test]
 def test_quat_slerp_midpoint : Bool :=

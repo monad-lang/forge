@@ -49,6 +49,9 @@ use lib::orbit {
 }
 use lib::web {web_mount, web_dispatch, web_tick}
 use forge_collide {Collider, collider, shape_box, set_collider}
+use forge_animate {
+    Easing, Property, key_vec3, track, channel, Clip, clip, animator, LoopMode, set_animator, animate_system
+}
 
 // ── Spin ────────────────────────────────────────────────────────────
 
@@ -190,6 +193,13 @@ def load : Loaded :=
 
 // ── Scene ───────────────────────────────────────────────────────────
 
+/// The gold cube bobs on its arm: up 0.3 and back, a forge-animate clip
+/// played ping-pong (Phase 11).
+def bob : Clip :=
+    clip [channel "" (track Property.prop_translation
+            [key_vec3 0.0 (vec3 0.0 0.8 0.0) Easing.linear, key_vec3 0.8 (vec3 0.0 1.1 0.0) Easing.sine_in_out])]
+         []
+
 def with_spin (world : World) (e : Entity) (speed : F64) : World :=
     let s : Spin := { speed := speed : Spin } in
     insert_component world e spin_name (Any.any s)
@@ -209,8 +219,9 @@ def scene (h : Handles) : World :=
     let arm : Spawned := spawn_transform_child w1 (transform_from_translation (vec3 2.0 0.0 0.0)) root.entity in
     let w2 : World := boxed (set_mesh arm.world arm.entity (mesh_component h.cylinder h.teal)) arm.entity 0.4 0.5 0.4 in
     let top : Spawned := spawn_transform_child w2 (transform_from_translation (vec3 0.0 0.8 0.0)) arm.entity in
-    let w3 : World := with_spin (boxed (set_mesh top.world top.entity (mesh_component h.small h.gold)) top.entity 0.3 0.3 0.3)
-                                top.entity 3.0 in
+    let w3a : World := with_spin (boxed (set_mesh top.world top.entity (mesh_component h.small h.gold)) top.entity 0.3 0.3 0.3)
+                                 top.entity 3.0 in
+    let w3 : World := set_animator w3a top.entity (animator bob LoopMode.loop_ping_pong) in
     let tilt : Quat := quat_from_axis_angle (vec3 1.0 0.0 0.0) (0.0 - f64_half_pi) in
     let floor : Spawned :=
         spawn_transform w3 (transform_new (vec3 0.0 (0.0 - 1.5) 0.0) tilt (vec3 1.0 1.0 1.0)) in
@@ -224,8 +235,8 @@ def demo : App :=
         (app_set_initial_world
             (app_set_assets
                 (app_add_orbit_camera
-                    (app_add_system (app_add_system app_new "spin" update_s spin_system)
-                        "move" update_s move_system)
+                    (app_add_system (app_add_system (app_add_system app_new "animate" update_s animate_system)
+                        "spin" update_s spin_system) "move" update_s move_system)
                     start_orbit)
                 l.assets)
             (scene l.handles))

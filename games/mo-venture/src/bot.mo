@@ -2,7 +2,11 @@
 // (platform tops). The bot runs toward the next one and jumps the way a
 // player does: when a downward ray just ahead of Mo finds no ground (an
 // edge), or when the spot is a step up close by. A spot marked `act_dash`
-// is reached with an air dash at the top of the jump. A spot counts as
+// is reached with an air dash at the top of the jump; `act_double` with a
+// second jump at the top of the first, `act_double_dash` with both. At an
+// `act_wait` spot (a moving platform's near end) the bot stands until the
+// platform is there; toward an `act_ride` spot it stands still and lets
+// the platform carry it. A spot counts as
 // reached once Mo stands at its height near it or past it, so momentum
 // never makes the bot circle. After a fall it resumes from the spot
 // nearest the respawn point.
@@ -18,7 +22,7 @@ use forge_core::query {query_entities}
 use forge_math {Vec3, vec3, v3_add, v3_sub, v3_dot, v3_length, v3_scale, ray, f64_sqrt, f64_max, f64_min}
 use forge_collide {Scene, raycast, layer_all}
 use lib::tune {Tune, tune, mo_stand}
-use lib::level {Level, Way, act_dash}
+use lib::level {Level, Way, act_walk, act_dash, act_double, act_double_dash, act_wait, act_ride}
 use lib::mo {Intent, intent, intent_none, MoState}
 
 /// Where the bot is on the route. `Copy`.
@@ -40,6 +44,9 @@ pub def bot_index (b : Bot) : I64 := b.index
 
 pub def bot_toggle (b : Bot) : Bot :=
     { on := Bool.not b.on, index := b.index, dash_pending := false, falls := b.falls : Bot }
+
+/// The same bot (on or off) at the start of a new level's route.
+pub def bot_restart (b : Bot) : Bot := { on := b.on, index := 0, dash_pending := false, falls := 0 : Bot }
 
 /// How near (on the ground plane) a landing spot counts as reached.
 pub def arrive : F64 := 1.0
@@ -85,6 +92,14 @@ def ground_ahead (sc : Scene) (pos : Vec3) (dir : Vec3) (feet : F64) : Bool :=
         Option.none => false
     }
 
+/// Is there ground just under the platform-top point `p`? (A moving
+/// platform is at this end of its path.)
+def ground_at (sc : Scene) (p : Vec3) : Bool :=
+    match raycast sc (ray (vec3 p.x (p.y + 0.5) p.z) (vec3 0.0 (0.0 - 1.0) 0.0)) 1.0 layer_all {
+        Option.some _ => true,
+        Option.none => false
+    }
+
 /// The fraction of run speed that covers `gap` before Mo, rising at `vy`
 /// and `above` the landing height, comes down to it.
 def aim (t : Tune) (vy : F64) (above : F64) (gap : F64) : F64 :=
@@ -108,20 +123,28 @@ def think_at (lv : Level) (sc : Scene) (b : Bot) (s : MoState) (pos : Vec3) (w :
     let moving : Bool := v3_length dir > 0.5 in
     let edge : Bool := moving && Bool.not (ground_ahead sc pos dir feet) in
     let step_up : Bool := target.y - feet > 0.3 && v3_length (flat (v3_sub target pos)) < 2.2 in
-    let jump : Bool := s.grounded && (edge || step_up) in
-    let dash_spot : Bool := match List.get next lv.route {
-        Option.some n0 => let n : Way := n0 in n.act == act_dash,
-        Option.none => false
+    let act : I64 := match List.get next lv.route {
+        Option.some n0 => let n : Way := n0 in n.act,
+        Option.none => act_walk
     } in
-    let dash : Bool := dash_spot && Bool.not s.grounded && s.vel.y <= 1.0 && Bool.not s.dashed in
+    // Movers: stand while the platform is away (wait) or carrying Mo (ride).
+    let hold : Bool := act == act_ride || (act == act_wait && s.grounded && Bool.not (ground_at sc target)) in
+    let jump : Bool := Bool.not hold && s.grounded && (edge || step_up) in
+    let air_spot : Bool := act == act_double || act == act_double_dash in
+    let dash_spot : Bool := act == act_dash || act == act_double_dash in
+    let air_jump : Bool := air_spot && Bool.not s.grounded && s.vel.y <= 0.0 && s.air_used == 0 in
+    let dash : Bool := dash_spot && Bool.not s.grounded && s.vel.y <= 1.0 && Bool.not s.dashed
+                           && (act == act_dash || s.air_used >= 1) in
     let done : Bool := next >= List.length lv.route in
     // In the air, aim: the horizontal speed that arrives over the spot when
     // Mo comes down to its height (air control does the rest). A dash spot
-    // wants every bit of distance, so it is not throttled.
+    // wants every bit of distance, so it is not throttled, and neither is
+    // the first half of a double jump.
     let gap : F64 := v3_length (flat (v3_sub target pos)) in
-    let mag : F64 := if s.grounded || dash_spot then 1.0 else aim tune s.vel.y (pos.y - (target.y + mo_stand)) gap in
-    let m : Vec3 := if done then vec3 0.0 0.0 0.0 else v3_scale dir mag in
-    { intent := intent m.x m.z jump true dash false,
+    let full : Bool := s.grounded || dash_spot || (air_spot && s.air_used == 0) in
+    let mag : F64 := if full then 1.0 else aim tune s.vel.y (pos.y - (target.y + mo_stand)) gap in
+    let m : Vec3 := if done || hold then vec3 0.0 0.0 0.0 else v3_scale dir mag in
+    { intent := intent m.x m.z (jump || air_jump) true dash false,
       bot := { on := true, index := next, dash_pending := false, falls := b.falls : Bot }
       : Thought }
 

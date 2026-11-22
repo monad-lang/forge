@@ -58,27 +58,50 @@ monad's web collector (`nightly-2026-11-19-b0fe09df` or later, PLAN.md gap
 G13). An older `monad` links the old runtime and fails with "undefined
 symbol: monad_export_enter"; run `monadup default`.
 
-Mo, a small blue explorer with an
-antenna, runs across the Skyway: floating platforms, stairs, a narrow
-bridge, a climb, a gap that needs the air dash and a high ledge, with 20
-sparks to collect, two checkpoints and a goal beacon at the end.
+Mo, a small blue explorer with an antenna, plays four levels:
+
+1. **Skyway**: floating platforms, stairs, a narrow bridge, a climb, a gap
+   that needs the air dash and a high ledge.
+2. **Cloud Steps**: ledges too tall and gaps too wide for one jump. Jump
+   again in the air, and once, jump again and dash.
+3. **Drift Docks**: a shuttle, an elevator and a ferry over the void. Wait
+   for a platform, ride it, step off.
+4. **Sun Spire**: a climb that needs all of it.
+
+Mo is either Xiaozhu (小猪), a pink piggy, or Xiaomao (小猫), a ginger
+kitty; press `C` to switch at any time (the run carries on). Each level has
+sparks to collect, two checkpoints and a goal beacon. A warm
+sun lights the scene and casts shadows (a shadow map; on WebGL1 without
+`WEBGL_depth_texture` the scene is lit without them).
 
 | Input | Effect |
 |---|---|
 | `W` `A` `S` `D` or the arrow keys | run, relative to the camera |
-| `Space` | jump (hold for a higher jump) |
+| `Space` | jump (hold for a higher jump); `Space` again in the air jumps once more |
 | `Shift` | on the ground (held): sprint; in the air (pressed): dash, once per jump |
 | right-drag, `Q` / `E`, `R` / `F` | turn the camera |
 | mouse wheel | zoom |
 | `P` | autopilot: Mo plays the level by itself |
+| `Enter` | after the goal: the next level |
+| `1` to `4` | play that level |
+| `Backspace` | restart the level |
+| `C` | switch Mo between Xiaozhu the piggy and Xiaomao the kitty |
 
-Falling off sends Mo back to the last checkpoint. The HUD shows sparks,
-time and falls.
+On a touch screen the page shows on-screen controls instead of the key
+list: a stick on the left to run, `JUMP` and `DASH` on the right (they act
+like `Space` and `Shift`, so tap `JUMP` again in the air for the second
+jump), ◀ ▶ to turn the camera, and small buttons for the autopilot (`P`),
+restart (↺), the next level (▶▶) and the hero (🐱 / 🐷, like `C`). They are page glue in
+`games/mo-venture/web/index.html` that sends the same key events.
 
-The game is in `games/mo-venture`: `src/level.mo` is the level as data,
-`src/mo.mo` Mo's controller, `src/rules.mo` the rules and HUD, and
-`src/bot.mo` the autopilot. Its native tests play the whole level with the
-autopilot through forge's frame loop.
+Falling off sends Mo back to the last checkpoint. The HUD shows the level,
+sparks, time and falls.
+
+The game is in `games/mo-venture`: `src/level.mo` and `src/levels.mo` are
+the levels as data, `src/mo.mo` Mo's controller, `src/rules.mo` the rules
+and HUD, `src/game.mo` the app and the campaign, and `src/bot.mo` the
+autopilot. Its native tests play every level with the autopilot through
+forge's frame loop.
 
 ## Run the demo in a browser
 
@@ -94,7 +117,8 @@ that directory on localhost. Set `PORT=9000` to change the port, or
 through the server: ES modules and WebAssembly do not load from `file://`.
 
 The demo is a spinning red cube with a teal cylinder orbiting it and a gold
-cube spinning on top, above a checkered floor:
+cube spinning and bobbing on top (a forge-animate clip), above a checkered
+floor:
 
 | Input | Effect |
 |---|---|

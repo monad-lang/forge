@@ -18,7 +18,9 @@ use lib::{
     plan_clears, plan_presents, plan_clear_color, plan_view, draw_call_mesh,
     draw_call_shader, draw_call_model, draw_call_texture, color_r,
     clear, set_camera, draw_mesh, camera_screen_ray,
-    Picked, picked_entity, picked_distance, pick_entity
+    Picked, picked_entity, picked_distance, pick_entity,
+    material_unlit, draw_call_unlit, plan_light, plan_shadows, plan_casters,
+    Light, light_sun, light_default, light_with_shadows, light_toward, light_ambient, world_set_light
 }
 use forge_core::ecs {World, Spawned, Entity, empty_world}
 use forge_math::{
@@ -295,3 +297,37 @@ def test_pick_with_no_assets_hits_nothing : Bool :=
         Option.some _ => false,
         Option.none => true
     }
+
+// ── Light ───────────────────────────────────────────────────────────
+
+/// A world without a light extracts no `set_light`, and the plan falls back
+/// to the default sun with no shadow pass.
+#[test]
+def test_plan_without_a_light_uses_the_default : Bool :=
+    let cmds : List RenderCommand := extract two_cube_world camera_stub color_black in
+    let sh : Shared (List RenderCommand) := Shared.of cmds in
+    let p : FramePlan := frame_plan cube_assets (Shared.get sh) in
+    let l : Light := plan_light p in
+    let t : Vec3 := light_toward l in
+    I64.beq (List.length (Shared.get sh)) 5 && Bool.not (plan_shadows p) && t.y > 0.8
+
+#[test]
+def test_plan_takes_the_worlds_light : Bool :=
+    let sun : Light := light_with_shadows (light_sun (vec3 0.0 1.0 0.0) (vec3 1.0 0.9 0.8) 0.7 0.25) 15.0 50.0 1024 in
+    let p : FramePlan := frame_plan cube_assets (extract (world_set_light two_cube_world sun) camera_stub color_black) in
+    let l : Light := plan_light p in
+    plan_shadows p && f64_abs (light_ambient l - 0.25) < 0.000001 && I64.beq (plan_draw_count p) 2
+
+/// Unlit draws are drawn but cast no shadow.
+#[test]
+def test_unlit_draws_cast_no_shadow : Bool :=
+    let m : MeshAdded := assets_add_mesh assets_empty (mesh_cube 0.5) in
+    let lit : MaterialAdded := assets_add_material m.assets (material_flat color_white) in
+    let glow : MaterialAdded := assets_add_material lit.assets (material_unlit color_white) in
+    let p : FramePlan :=
+        frame_plan glow.assets [draw_mesh m.handle lit.handle mat4_identity, draw_mesh m.handle glow.handle mat4_identity] in
+    let unlit_second : Bool := match List.get 1 (plan_draws p) {
+        Option.some d => draw_call_unlit d,
+        Option.none => false
+    } in
+    I64.beq (plan_draw_count p) 2 && I64.beq (List.length (plan_casters p)) 1 && unlit_second

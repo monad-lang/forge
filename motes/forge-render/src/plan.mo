@@ -15,7 +15,7 @@
 // natively -- no browser needed to know what a frame will draw.
 
 use std::derive {}
-use std::list {}
+use std::list {List.filter}
 use init::copy {Copy}
 use init::clone {Clone}
 use forge_math::{Mat4, mat4_identity, mat4_mul, mat4_inverse, Ray, screen_to_ray}
@@ -27,16 +27,19 @@ use lib::mesh {MeshData}
 use lib::material {
     Assets, assets_mesh, assets_material_or_default, Material, ShaderKind, TextureHandle
 }
+use lib::light {Light, light_default, light_shadows, light_view_projection}
 
 /// One resolved draw: a mesh that EXISTS, the shader and tint to use, the
-/// texture (or `texture_none`) and the model matrix. All-`Copy`.
+/// texture (or `texture_none`), the model matrix, and whether the light
+/// applies (`unlit` draws are not lit and cast no shadow). All-`Copy`.
 #[derive Copy Clone Debug]
 pub struct DrawCall {
     mesh : I64,
     shader : ShaderKind,
     tint : Color,
     texture : TextureHandle,
-    model : Mat4
+    model : Mat4,
+    unlit : Bool
 }
 
 pub def draw_call_mesh (d : DrawCall) : I64 := d.mesh
@@ -49,6 +52,8 @@ pub def draw_call_texture (d : DrawCall) : TextureHandle := d.texture
 
 pub def draw_call_model (d : DrawCall) : Mat4 := d.model
 
+pub def draw_call_unlit (d : DrawCall) : Bool := d.unlit
+
 /// A whole frame, resolved. `Copy` is the hand-written identity (the draw
 /// list is an immutable list).
 ///
@@ -57,6 +62,7 @@ pub def draw_call_model (d : DrawCall) : Mat4 := d.model
 /// - `draws`   : in command order.
 /// - `skipped` : draws dropped because their mesh id is not in `Assets`.
 /// - `presents`: whether the frame ends in a `present`.
+/// - `light`   : from the last `set_light`, else `light_default`.
 pub struct FramePlan {
     clears : Bool,
     clear : Color,
@@ -64,7 +70,8 @@ pub struct FramePlan {
     projection : Mat4,
     draws : List DrawCall,
     skipped : I64,
-    presents : Bool
+    presents : Bool,
+    light : Light
 }
 
 pub instance Copy FramePlan {
@@ -78,7 +85,8 @@ pub def plan_empty : FramePlan :=
       projection := mat4_identity,
       draws := [],
       skipped := 0,
-      presents := false
+      presents := false,
+      light := light_default
       : FramePlan }
 
 pub def plan_clears (p : FramePlan) : Bool := p.clears
@@ -99,6 +107,19 @@ pub def plan_skipped (p : FramePlan) : I64 := p.skipped
 
 pub def plan_presents (p : FramePlan) : Bool := p.presents
 
+pub def plan_light (p : FramePlan) : Light := p.light
+
+/// Does this frame want a shadow pass?
+pub def plan_shadows (p : FramePlan) : Bool := light_shadows p.light
+
+/// World -> shadow-map clip space for this frame's light.
+pub def plan_light_view_projection (p : FramePlan) : Mat4 := light_view_projection p.light
+
+/// The draws that cast shadows: every lit draw, in plan order. A backend
+/// draws exactly these into the shadow map.
+pub def plan_casters (p : FramePlan) : List DrawCall :=
+    List.filter (fn (d : DrawCall) => Bool.not d.unlit) p.draws
+
 /// Resolve one draw against the tables: `none` when the mesh is unknown, the
 /// default material when the material is.
 pub def resolve_draw (assets : Assets) (mesh : MeshHandle) (material : MaterialHandle) (model : Mat4)
@@ -109,7 +130,7 @@ pub def resolve_draw (assets : Assets) (mesh : MeshHandle) (material : MaterialH
             let m : Material := assets_material_or_default assets material.id in
             Option.some
                 { mesh := mesh.id, shader := m.shader, tint := m.tint, texture := m.texture,
-                  model := model
+                  model := model, unlit := m.unlit
                   : DrawCall }
     }
 
@@ -129,6 +150,7 @@ def plan_step (assets : Assets) (p : FramePlan) (cmd : RenderCommand) : FramePla
             { p with view := camera_view c, projection := camera_projection c },
         RenderCommand.draw_mesh_cmd mesh material model =>
             plan_with_draw p (resolve_draw assets mesh material model),
+        RenderCommand.set_light_cmd l => { p with light := l },
         RenderCommand.present_cmd => { p with presents := true }
     }
 

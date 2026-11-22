@@ -135,7 +135,7 @@ def depenetrate (m : Mover) (p : Vec3) (n : I64) : Vec3 :=
 def flat (v : Vec3) : Vec3 := vec3 v.x 0.0 v.z
 
 /// Remove the part of `v` that drives into `n`.
-def clip (v : Vec3) (n : Vec3) : Vec3 :=
+def clip_along (v : Vec3) (n : Vec3) : Vec3 :=
     let d : F64 := v3_dot v n in
     if d < 0.0 then v3_sub v (v3_scale n d) else v
 
@@ -182,9 +182,9 @@ def slide_go (m : Mover) (s : Slide) (rem : Vec3) (was_grounded : Bool) (n : I64
                 let left : Vec3 := v3_scale dir (len - go) in
                 let nrm : Vec3 := hit.normal in
                 if nrm.y >= m.cfg.ground_y
-                then slide_go m (with_ground s1 nrm hit.entity) (clip left nrm) was_grounded (n + 1)
+                then slide_go m (with_ground s1 nrm hit.entity) (clip_along left nrm) was_grounded (n + 1)
                 else if nrm.y <= 0.0 - m.cfg.ground_y
-                then slide_go m (with_ceiling s1) (clip left nrm) was_grounded (n + 1)
+                then slide_go m (with_ceiling s1) (clip_along left nrm) was_grounded (n + 1)
                 else
                     let on_ground : Bool := was_grounded || s1.grounded in
                     let stepped : Option Vec3 := if on_ground then try_step m s1.position (flat left) else Option.none in
@@ -194,7 +194,7 @@ def slide_go (m : Mover) (s : Slide) (rem : Vec3) (was_grounded : Bool) (n : I64
                         Option.none =>
                             let wn : Vec3 := if on_ground && v3_length (flat nrm) > 0.000001
                                              then v3_normalize (flat nrm) else nrm in
-                            slide_go m (with_wall s1 hit.entity) (clip left wn) was_grounded (n + 1)
+                            slide_go m (with_wall s1 hit.entity) (clip_along left wn) was_grounded (n + 1)
                     }
         }
 

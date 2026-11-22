@@ -2,11 +2,15 @@
 // Mo Venture (games/mo-venture) over monad's stub DOM and recording stub
 // WebGL. Staged and run by scripts/web-smoke.sh:
 //
-//   node target/web/mo-venture/smoke/mo_venture_smoke.mjs target/web/mo-venture/app.wasm [webgl2|webgl1|none]
+//   node target/web/mo-venture/smoke/mo_venture_smoke.mjs target/web/mo-venture/app.wasm [webgl2|webgl1|webgl1-nodepth|none]
 //
 // It reads the game through its HUD (`data-hud-*` on the canvas: sparks,
 // time, falls, message, and Mo's position as "x y z"). Checks, in order:
 //   - mount and setup: two programs, three meshes; the HUD appears;
+//   - shadows: frame 1 builds the shadow map (depth texture, framebuffer,
+//     depth program); each frame then renders the casters depth-only into
+//     it before the main pass. `webgl1-nodepth` (WebGL1 without
+//     WEBGL_depth_texture) builds none and draws lit without shadows;
 //   - idle: Mo stands still on the start island;
 //   - keys: holding W runs Mo into the level (-z); Space jumps and lands;
 //   - autopilot: P hands Mo to the route bot, which climbs the stairs and
@@ -26,13 +30,15 @@ import { installGl, glStub } from './stub_gl.mjs';
 const path = process.argv[2];
 const mode = process.argv[3] || 'webgl2';
 if (!path) {
-  console.error('usage: node mo_venture_smoke.mjs <app.wasm> [webgl2|webgl1|none]');
+  console.error('usage: node mo_venture_smoke.mjs <app.wasm> [webgl2|webgl1|webgl1-nodepth|none]');
   process.exit(2);
 }
 
 installDocument();
 installGl({ dpr: 1, clientWidth: 640, clientHeight: 360 });
-glStub.mode = mode;
+glStub.mode = mode === 'webgl1-nodepth' ? 'webgl1' : mode;
+glStub.noDepthTexture = mode === 'webgl1-nodepth';
+const shadows = mode !== 'webgl1-nodepth';
 
 function byId(id) {
   const walk = (n) => {
@@ -91,6 +97,26 @@ const f1 = frame();
 if (count(f1, 'drawElements') < 40) fail(`frame 1 drew ${count(f1, 'drawElements')} meshes, want the whole level`);
 if (hud('sparks') !== '0/20') fail(`HUD sparks ${JSON.stringify(hud('sparks'))}, want "0/20"`);
 
+// ── shadows ──
+if (count(f1, 'createFramebuffer') !== (shadows ? 1 : 0)) fail(`frame 1 made ${count(f1, 'createFramebuffer')} framebuffers`);
+if (shadows) {
+  if (count(f1, 'checkFramebufferStatus') !== 1) fail('the shadow framebuffer was not checked');
+  if (count(f1, 'linkProgram') !== 1) fail(`frame 1 linked ${count(f1, 'linkProgram')} programs, want the depth program`);
+}
+{
+  const f = frame();
+  const binds = f.filter((c) => c[0] === 'bindFramebuffer');
+  const main = f.length - f.slice().reverse().findIndex((c) => c[0] === 'bindFramebuffer');
+  const mainDraws = shadows ? count(f.slice(main), 'drawElements') : count(f, 'drawElements');
+  if (shadows) {
+    if (binds.length !== 2 || binds[0][2] === null || binds[1][2] !== null) fail(`shadow frame framebuffer binds: ${JSON.stringify(binds)}`);
+    if (count(f, 'colorMask') !== 2 || count(f, 'polygonOffset') !== 1) fail('the depth pass did not mask colour and offset depth');
+    const casters = count(f, 'drawElements') - mainDraws;
+    if (!(casters >= 30 && casters < mainDraws)) fail(`depth pass drew ${casters} casters for ${mainDraws} draws`);
+  } else if (binds.length !== 0 || count(f, 'colorMask') !== 0) fail('a shadow pass ran without depth textures');
+  if (mainDraws < 40) fail(`the main pass drew ${mainDraws} meshes`);
+}
+
 // ── idle ──
 frames(20);
 const [x0, y0, z0] = pos();
@@ -131,7 +157,8 @@ glStub.lost = true;
 if (count(frame(), 'drawElements') !== 0) fail('a lost context was drawn to');
 glStub.lost = false;
 const back = frame();
-if (count(back, 'linkProgram') !== 2 || count(back, 'drawElements') < 30) fail('the restored context did not draw the level');
+if (count(back, 'linkProgram') !== (shadows ? 3 : 2) || count(back, 'drawElements') < 30) fail('the restored context did not draw the level');
+if (count(back, 'createFramebuffer') !== (shadows ? 1 : 0)) fail('the restored context did not rebuild the shadow map');
 
 // ── heap: garbage is collected ──
 const memory = instance.exports.memory;

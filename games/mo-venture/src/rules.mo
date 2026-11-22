@@ -9,13 +9,14 @@
 use std::derive {}
 use init::copy {Copy}
 use init::id {Id}
-use forge_core::ecs {World, Entity, Spawned, spawn, despawn, insert_component, get_component_named}
+use forge_core::ecs {World, Entity, Spawned, spawn, despawn, insert_component, remove_component, get_component_named}
 use forge_core::query {query_entities}
 use forge_core::world_m {WorldM, WorldM.modify}
 use forge_math {Vec3, vec3, f64_abs}
 use forge_schedule {world_time, time_delta}
 use forge_render {set_mesh}
-use forge_collide {Pose, pose_at, collision_scene, overlap, layer_all}
+use forge_collide {Pose, pose_at, collision_scene, overlap, layer_all, collider_name}
+use forge_animate {Easing, TweenEnd, set_tween, tween_scale, tween_then}
 use forge_app {hud_set}
 use lib::level {Level}
 use lib::look {Post, post_name, spark_name, goal_name}
@@ -62,6 +63,9 @@ pub def game_won (g : GameState) : Bool := g.won
 pub def game_checkpoint (g : GameState) : I64 := g.checkpoint
 
 pub def game_respawn (g : GameState) : Vec3 := g.respawn
+
+/// Seconds since the last message (a checkpoint, the goal) was set.
+pub def game_message_age (g : GameState) : F64 := g.message_age
 
 def with_sparks (g : GameState) (n : I64) : GameState :=
     { sparks := n, total := g.total, falls := g.falls, time := g.time, respawn := g.respawn,
@@ -114,6 +118,13 @@ pub def world_set_game (world : World) (g : GameState) : World :=
             s.world
     }
 
+/// The world without a run state (a new level starts a fresh one).
+pub def world_clear_game (world : World) : World :=
+    match List.first (query_entities world [game_name] []) {
+        Option.some e => despawn world e,
+        Option.none => world
+    }
+
 // ── Touches ─────────────────────────────────────────────────────────
 
 /// The world and game state threaded through the touched entities. `Copy`.
@@ -141,9 +152,16 @@ def has_named (world : World) (e : Entity) (name : String) : Bool :=
         Option.none => false
     }
 
+/// A collected spark pops: no longer a spark or a trigger, it swells and
+/// is despawned at the end of its tween.
+def pop_spark (world : World) (e : Entity) : World :=
+    let w1 : World := remove_component (remove_component world e spark_name) e collider_name in
+    set_tween w1 e (tween_then (tween_scale (vec3 0.32 0.32 0.32) (vec3 0.85 0.85 0.85) 0.22 Easing.quad_out)
+                                TweenEnd.end_despawn)
+
 def touch (p : Play) (e : Entity) : Play :=
     if has_named p.world e spark_name
-    then { world := despawn p.world e, game := with_sparks p.game (p.game.sparks + 1) : Play }
+    then { world := pop_spark p.world e, game := with_sparks p.game (p.game.sparks + 1) : Play }
     else if has_named p.world e goal_name
     then (if p.game.won then p else { world := p.world, game := with_won p.game : Play })
     else

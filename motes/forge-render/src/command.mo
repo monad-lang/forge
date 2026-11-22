@@ -15,6 +15,7 @@ use std::list {}
 use init::copy {Copy}
 use init::clone {Clone}
 use forge_math::{Vec3, Mat4, mat4_identity, mat4_mul}
+use lib::light {Light}
 
 // ── Handles and colour ──────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ pub type RenderCommand {
     clear_cmd (color : Color),
     set_camera_cmd (camera : Camera),
     draw_mesh_cmd (mesh : MeshHandle) (material : MaterialHandle) (model : Mat4),
+    set_light_cmd (light : Light),
     present_cmd
 }
 
@@ -109,13 +111,17 @@ pub def draw_mesh (mesh : MeshHandle) (material : MaterialHandle) (model : Mat4)
 
 pub def present_cmd_unit : RenderCommand := present_cmd
 
+/// The frame's sun (see `light.mo`); a frame without one uses `light_default`.
+pub def set_light (l : Light) : RenderCommand := set_light_cmd l
+
 /// A command's sort tag, for tests and for a backend that wants to group.
 pub def command_kind (cmd : RenderCommand) : I64 :=
     match cmd {
         clear_cmd _ => 0,
         set_camera_cmd _ => 1,
         draw_mesh_cmd _ _ _ => 2,
-        present_cmd => 3
+        present_cmd => 3,
+        set_light_cmd _ => 4
     }
 
 pub def is_draw (cmd : RenderCommand) : Bool :=
@@ -123,6 +129,7 @@ pub def is_draw (cmd : RenderCommand) : Bool :=
         draw_mesh_cmd _ _ _ => true,
         clear_cmd _ => false,
         set_camera_cmd _ => false,
+        set_light_cmd _ => false,
         present_cmd => false
     }
 

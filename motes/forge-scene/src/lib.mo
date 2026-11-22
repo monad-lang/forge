@@ -17,3 +17,5 @@ pub use lib::scene {
     all_transformed, transform_roots, children_of,
     propagate_transforms, entity_global_translation
 }
+
+pub use lib::name {Name, name_name, set_name, entity_name, find_named}

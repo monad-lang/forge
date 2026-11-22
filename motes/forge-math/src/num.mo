@@ -62,14 +62,37 @@ def sqrt_scaled (x : F64) (scale : F64) (n : I64) : F64 :=
 pub def f64_sqrt (x : F64) : F64 :=
     if x <= 0.0 then 0.0 else sqrt_scaled x 1.0 0
 
-/// Reduce `x` into `[-pi, pi]` by stepping `+-2pi`. Bounded: gives up after
-/// 20 steps (a caller passing `1e30` radians gets a wrong answer, not a hang).
+/// The largest `tau * 2^k <= a` (for `a >= tau`). Doubling is exact in
+/// binary. Bounded at 1100 doublings, past any finite double's exponent.
 #[terminating]
-def reduce_tau (x : F64) (n : I64) : F64 :=
-    if I64.lt 20 n then x
-    else if x > f64_pi then reduce_tau (x - f64_tau) (I64.add n 1)
-    else if x < (0.0 - f64_pi) then reduce_tau (x + f64_tau) (I64.add n 1)
-    else x
+def tau_top (a : F64) (m : F64) (n : I64) : F64 :=
+    if I64.lt 1100 n then m
+    else if m * 2.0 <= a then tau_top a (m * 2.0) (I64.add n 1)
+    else m
+
+/// `a mod tau` for `a >= 0`, by binary long division: subtract `tau * 2^k`
+/// from the largest `k` down to 0. O(log a) steps, with no cap on how many
+/// turns get removed. The old loop stepped `2pi` at a time and gave up
+/// after 20 steps, so `sin` of more than about 21pi radians went through
+/// the series with a huge argument and blew up (a spin by elapsed time
+/// broke after about 90 s).
+#[terminating]
+def mod_down (a : F64) (m : F64) (n : I64) : F64 :=
+    if I64.lt 1100 n then a
+    else if m < f64_tau then a
+    else mod_down (if a >= m then a - m else a) (m * 0.5) (I64.add n 1)
+
+/// `x mod 2pi` in `[0, 2pi)` for `x >= 0`.
+def mod_tau (a : F64) : F64 :=
+    if a < f64_tau then a else mod_down a (tau_top a f64_tau 0) 0
+
+/// `x` wrapped into `[-pi, pi]`: the same angle, for any finite `x`.
+/// `sin`/`cos` use it, and so can callers that build angles from a growing
+/// clock (`t * speed`) and want to keep them small.
+pub def f64_wrap_angle (x : F64) : F64 :=
+    let r : F64 := mod_tau (f64_abs x) in
+    let w : F64 := if r > f64_pi then r - f64_tau else r in
+    if x < 0.0 then 0.0 - w else w
 
 /// Fold `[-pi, pi]` into `[-pi/2, pi/2]` using `sin(pi - x) = sin x`.
 def reduce_half (x : F64) : F64 :=
@@ -103,10 +126,26 @@ pub def f64_cos_small (x : F64) : F64 :=
         + x8 / 40320.0 + (0.0 - x10 / 3628800.0) + x12 / 479001600.0
 
 /// `sin x` for any `x` (reduced, then folded into the series' good range).
-pub def f64_sin (x : F64) : F64 := f64_sin_small (reduce_half (reduce_tau x 0))
+pub def f64_sin (x : F64) : F64 := f64_sin_small (reduce_half (f64_wrap_angle x))
 
 /// `cos x = sin(x + pi/2)`.
 pub def f64_cos (x : F64) : F64 := f64_sin (x + f64_half_pi)
+
+/// 2^52: at and above it every double is an integer.
+def two52 : F64 := 4503599627370496.0
+
+/// `x` rounded to an integer (ties to even), by the 2^52 trick: adding and
+/// subtracting 2^52 leaves no bits below the units place. There is no
+/// native rounding or float -> int conversion.
+pub def f64_round (x : F64) : F64 :=
+    if f64_abs x >= two52 then x
+    else if x >= 0.0 then (x + two52) - two52
+    else (x - two52) + two52
+
+/// The largest integer `<= x`.
+pub def f64_floor (x : F64) : F64 :=
+    let r : F64 := f64_round x in
+    if r > x then r - 1.0 else r
 
 /// `1/x` (a named spelling, so formulas read as reciprocals).
 pub def f64_recip (x : F64) : F64 := 1.0 / x
@@ -169,6 +208,43 @@ def test_f64_sin_reduces_large : Bool :=
 #[test]
 def test_f64_min_max_clamp : Bool :=
     f64_approx (f64_clamp 0.0 1.0 5.0) 1.0
+
+#[test]
+def test_f64_wrap_angle_small_is_identity : Bool :=
+    F64.beq (f64_wrap_angle 1.25) 1.25 && F64.beq (f64_wrap_angle (0.0 - 3.0)) (0.0 - 3.0)
+
+#[test]
+def test_f64_wrap_angle_many_turns : Bool :=
+    f64_approx_eps 0.000001 (f64_wrap_angle (1.0 + f64_tau * 1000.0)) 1.0
+        && f64_approx_eps 0.000001 (f64_wrap_angle (0.0 - 1.0 - f64_tau * 1000.0)) (0.0 - 1.0)
+        && f64_approx_eps 0.000001 (f64_wrap_angle (f64_pi + 0.5 + f64_tau * 77.0)) (0.5 - f64_pi)
+
+def unit_circle_at (x : F64) : Bool :=
+    let s : F64 := f64_sin x in
+    let c : F64 := f64_cos x in
+    f64_approx_eps 0.000001 (s * s + c * c) 1.0 && s <= 1.000001 && s >= 0.0 - 1.000001
+
+/// Past 21pi the old reduction gave up; `sin^2 + cos^2` stays 1 far beyond.
+#[test]
+def test_f64_sin_cos_large_arguments : Bool :=
+    let ok : F64 -> Bool := unit_circle_at in
+    ok 100.0 && ok 1000.0 && ok 123456.789 && ok 1000000.0 && ok (0.0 - 1000000.0)
+
+/// `sin` many turns out matches `sin` of the reduced angle.
+#[test]
+def test_f64_sin_periodic_far_out : Bool :=
+    f64_approx_eps 0.00001 (f64_sin (0.7 + f64_tau * 5000.0)) (f64_sin 0.7)
+        && f64_approx_eps 0.00001 (f64_cos (0.0 - 2.0 - f64_tau * 300.0)) (f64_cos 2.0)
+
+#[test]
+def test_f64_floor : Bool :=
+    F64.beq (f64_floor 2.5) 2.0 && F64.beq (f64_floor (0.0 - 2.5)) (0.0 - 3.0) && F64.beq (f64_floor 3.0) 3.0
+        && F64.beq (f64_floor (0.0 - 0.25)) (0.0 - 1.0) && F64.beq (f64_floor 0.75) 0.0
+        && F64.beq (f64_floor 10000000000.5) 10000000000.0 && F64.beq (f64_floor (0.0 - 7.0)) (0.0 - 7.0)
+
+#[test]
+def test_f64_round_ties_to_even : Bool :=
+    F64.beq (f64_round 2.5) 2.0 && F64.beq (f64_round 3.5) 4.0 && F64.beq (f64_round (0.0 - 1.4)) (0.0 - 1.0)
 
 #[test]
 def test_f64_of_i64 : Bool :=

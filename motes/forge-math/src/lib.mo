@@ -14,7 +14,7 @@
 
 pub use lib::num {
     f64_pi, f64_half_pi, f64_tau, f64_abs, f64_min, f64_max, f64_clamp, f64_sqrt,
-    f64_sin, f64_cos, f64_of_i64
+    f64_sin, f64_cos, f64_wrap_angle, f64_round, f64_floor, f64_of_i64
 }
 pub use lib::vec {
     Vec2, vec2, v2_zero, v2_one, v2_add, v2_sub, v2_scale, v2_neg, v2_dot,

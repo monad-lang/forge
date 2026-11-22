@@ -38,3 +38,6 @@ workspace = true
 
 [dependencies.forge_collide]
 workspace = true
+
+[dependencies.forge_animate]
+workspace = true

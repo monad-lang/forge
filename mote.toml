@@ -28,6 +28,9 @@ path = "motes/forge-reactive"
 [workspace.dependencies.forge_collide]
 path = "motes/forge-collide"
 
+[workspace.dependencies.forge_animate]
+path = "motes/forge-animate"
+
 # The WebGL backend. Web-only (`targets = ["web"]`); reached by a game
 # through `forge_app::web`, never by the native-tested library.
 [workspace.dependencies.forge_webgl]

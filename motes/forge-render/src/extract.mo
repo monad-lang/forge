@@ -19,8 +19,9 @@ use forge_math::{Mat4}
 use forge_scene::{entity_global}
 use lib::command {
     RenderCommand, Color, Camera, MeshHandle, MaterialHandle,
-    clear, set_camera, draw_mesh, present_cmd_unit
+    clear, set_camera, set_light, draw_mesh, present_cmd_unit
 }
+use lib::light {world_light_opt}
 
 // ── Mesh component ──────────────────────────────────────────────────
 
@@ -102,10 +103,18 @@ pub def drawables (world : World) : List DrawItem :=
 pub def draw_commands (world : World) : List RenderCommand :=
     List.map (fn (d : DrawItem) => draw_mesh d.mesh d.material d.model) (drawables world)
 
-/// A full frame's worth of commands: clear, set the camera, a draw per
-/// drawable, present. The ORDER is the contract a backend relies on.
+/// The world's light as a command, if it set one.
+def light_commands (world : World) : List RenderCommand :=
+    match world_light_opt world {
+        Option.some l => [set_light l],
+        Option.none => []
+    }
+
+/// A full frame's worth of commands: clear, set the camera, set the light
+/// (only when the world has one), a draw per drawable, present. The ORDER
+/// is the contract a backend relies on.
 pub def extract (world : World) (camera : Camera) (background : Color) : List RenderCommand :=
-    let head : List RenderCommand := [clear background, set_camera camera] in
+    let head : List RenderCommand := List.append [clear background, set_camera camera] (light_commands world) in
     List.append head (List.append (draw_commands world) [present_cmd_unit])
 
 /// The number of drawable entities.

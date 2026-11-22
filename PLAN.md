@@ -929,7 +929,7 @@ selection) and the cost of persistent lists in the broad phase. Budget: 200
 colliders at 60 Hz in wasm, checked with a bench before Phase 12 builds on
 it.
 
-### Mo Venture — the example game — **v1 done**
+### Mo Venture — the example game — **v2 done**
 
 `games/mo-venture`: a 3D platformer starring Mo, forge's acceptance test.
 Each engine phase lands with the game features that need it.
@@ -961,12 +961,40 @@ Each engine phase lands with the game features that need it.
   Native frame cost is high (the Skyway playthrough takes
   ~15 s natively); building the collision scene once per frame instead of
   three times is the first saving.
-- **With Phase 11:** squash and stretch, a run cycle, spark pops, waving
-  flags, moving platforms that carry Mo (the controller's `ground` entity).
+- **v2 (on Phase 11, 2026-11-20).**
+  - **Fixes.** The goal gem used to blow up after about 90 s: forge-math's
+    `sin`/`cos` stopped reducing past 21π. Now `f64_wrap_angle` reduces by
+    binary long division, and spins wrap their angle. Taps used to be
+    dropped: a jump released in its first frame (a one-frame tap, or a
+    buffered press let go before landing) was cut at once to about 0.4.
+    Now the short-hop cut waits 0.12 s (`min_hop`). A test also checks
+    that grounding holds across seams and small steps at 30, 60 and 144 Hz.
+  - **New.** One mid-air jump per airtime (Space again). Moving platforms
+    (`mover` in the level data, a ping-pong clip) carry Mo through a
+    `Carrier` delta and pass their momentum on when Mo jumps off. Squash
+    and stretch on take-off and landing, spark pops, waving flags and a
+    bobbing gem. A sun (`mo_sun`) that the shadow box and the disc follow,
+    casting shadow-mapped shadows (2048², 3×3 PCF; lit-only where depth
+    textures are missing).
+  - **Touch.** On a touch screen the page shows a stick, JUMP, DASH,
+    camera ◀ ▶ and autopilot/restart/next buttons. It is page glue in
+    `web/index.html` that sends the same `KeyboardEvent`s the keys do, so
+    the game itself is unchanged.
+  - **Heroes.** Mo is Xiaozhu the piggy (default) or Xiaomao the kitty
+    (`look.mo`: `dress_mo`). `C` (or the 🐱/🐷 touch button) switches in
+    place by re-dressing the root's children (`redress_mo`), so the run
+    carries on. The choice lives on the `Campaign` and survives level
+    changes. Only the look differs.
+  - **Levels.** A `Campaign` of four: Skyway, Cloud Steps (air jump),
+    Drift Docks (movers) and Sun Spire (everything). `1`-`4` pick a level,
+    `Backspace` restarts it, and Enter goes on after the goal. The
+    autopilot also handles `act_double`, `act_double_dash`, `act_wait` and
+    `act_ride`.
+  - **Still to come:** a run cycle.
 - **With Phase 12:** pushable crates (one ledge needs a crate), bounce
   pads, a seesaw on a hinge.
 
-### Phase 11: forge-animate — animation (P8) — planned
+### Phase 11: forge-animate — animation (P8) — **done**
 
 A new native mote, `motes/forge-animate` (deps: forge-core, forge-math,
 forge-scene, forge-schedule).
@@ -1002,6 +1030,28 @@ forge-scene, forge-schedule).
 7. **Demo and smoke.** The gold cube bobs on a looping clip, and picking
    an entity plays a short "pop" tween. The smoke asserts that the cube's
    model matrix follows the clip at known timestamps.
+
+**As built (2026-11-20).** `motes/forge-animate`: `ease` (17 curves, exact
+at 0 and 1), `pose` (`Property`: translation, rotation, scale, all as
+`Vec4`), `track`, `animator` (clips, `Name`-bound channels, once, repeat
+and ping-pong, crossfade, markers into `"forge.anim_events"`) and `tween`
+(hold, remove or despawn at the end), plus `Name`/`find_named` in
+forge-scene. There are 19 tests. Where it differs from the plan above:
+- **No `class Lerp A`, no generic `Track A`.** A generic type can't be
+  `Copy`, and class dispatch happens at run time (see vec.mo). Every
+  animated value is a `Vec4` with a `Property` tag, and rotations blend
+  by shortest-arc nlerp.
+- **Sampling is one linear pass**, not a binary search. `List` is affine
+  and tracks are short. A binary search needs an indexed persistent
+  vector.
+- **Clips live in the `Animator`**, not in `Assets`. They're persistent
+  lists, so sharing them costs nothing.
+- **The type is `Property`, not `Prop`.** A user type named `Prop` is
+  shadowed by a built-in, so its `Copy` instance is ignored (gap G15).
+- **Tint tweens wait** for per-entity tint overrides in forge-render.
+- **Demo:** the gold cube bobs on a ping-pong clip. The pop on pick waits
+  for the web pick to reach the world (today it only sets `data-picked`),
+  and the smoke doesn't yet sample the cube's matrix.
 
 ### Phase 12: forge-physics — generic rigid-body physics (P11) — planned
 
@@ -1108,6 +1158,12 @@ Recorded in full, with repros and the workarounds above, in
 | G11 | no field access on a call result: `(f x).yaw` is "unknown variable 'yaw'" | bind with `let`, or a getter |
 | G13 | ✅ FIXED in monad `20b23090` (pinned at `b0fe09df`): the web target had no GC (a bump allocator; the demo grew 0.83 MB/frame, Mo Venture 11 MB/frame, ~6 s to 4 GB). `runtime/src/gc_wasm.c` now collects at export boundaries. Smoke peaks: demo 43.2 MiB over 6000 frames, Mo Venture 50.6 MiB over ~1140 | the smokes assert a heap ceiling. Needs `nightly-2026-11-19-b0fe09df` or later: an older binary links its own old runtime and fails with "undefined symbol: monad_export_enter" |
 | G12 | a `pub use` re-export of another mote's item is not visible to consumers: `use forge_app {Vec3}` is "`Vec3` is not imported, declared in `forge_math::vec`" | a game also depends on the engine motes it names |
+| G14 | ✅ FIXED in monad `0ddf5d9c` (pinned at `4916d8fa`, `nightly-2026-11-21-4916d8fa`): `web_wasm` had no render targets (no framebuffers, depth textures, `colorMask` or `polygonOffset`), so no shadow maps | (none needed) forge-webgl renders the shadow map. An older nightly fails to link with "undefined symbol: web_gl_tex_image_depth" |
+| G15 | a user type named `Prop` is shadowed by a built-in: `Prop.pa` is an "unknown variable", and its `Copy` instance is ignored ("`p` : Prop is used 2 times but is affine"), while the same type named `Prup` works | forge-animate's type is `Property` |
+| G16 | a PRIVATE `def` in one mote clashes with a `pub def` of the same name imported from another: with `a::controller` holding a private `clip` and `b::animator` a public one, a third mote's `use b {clip}` then `clip x` fails with "`clip` is referenced from c::look but declared in b::animator, a::controller -- add an explicit `use <module> {clip}`", even though the `use` is explicit. Verified on `nightly-2026-11-21-4916d8fa`; renaming the private def fixes it. The same family as the private-struct clash (`Run`) met in Phase 11 | forge-collide's helper is `clip_along`; forge-animate's internal struct is `AnimRun` |
+| G17 | a user type named like a prelude type loses its constructor qualifier: with `pub type Signal (A : Type) { mk (x : A) }`, `match s { Signal.mk x => x }` fails with "ambiguous constructor `mk`: could resolve to either `std.derive::CopyNames` or `sys.sys::Stat`" (`sys::Signal` exists). Regressed between `b0fe09df` and `4916d8fa`; verified on `nightly-2026-11-21-4916d8fa`; renaming the type to `Sig` fixes the repro | forge-reactive's constructor is `Signal.signal_mk` |
+
+The `4916d8fa` pin also carries monad's fixes for G2, G3, G4, G8, G9 and G12 (commits `856591f7`, `95b4e846`, `f1a257b6`, `6a571381`, `3592122b`, `3295e316`). Forge has not yet dropped those workarounds; that's the next cleanup. G4 now makes an unresolved `use` an error.
 
 ## TDD approach
 
@@ -1162,6 +1218,8 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Orbit camera: `forge_app::orbit` (`Orbit`, `app_add_orbit_camera`, `CameraRig` resource), `app_frame_viewed`; camera-relative demo movement
 - [x] Phase 10: forge-collide (shapes, SAT + GJK/EPA narrow phase, sort-and-sweep broad phase, raycast/overlap/shape-cast, contact events, `move_and_slide`; 46 tests). 200-collider budget not met yet.
 - [x] Mo Venture v1 (`games/mo-venture`): Skyway level, Mo's controller, rules + HUD, autopilot, follow camera; lit meshes, `mesh_sphere`, HUD channel, collider picking; bot playthrough tests + wasm smoke
-- [ ] Phase 11: forge-animate (`Lerp`, easing, tweens, keyframe clips, `Animator` with loop modes and crossfade)
+- [x] Phase 11: forge-animate (easing, `Vec4` tracks, clips with `Name`-bound channels, `Animator` with loop modes, crossfade and markers, tweens; 19 tests)
+- [x] Light: forge-render `Light` resource (`set_light` command, `plan_light`, per-fragment lighting in forge-webgl, `material_unlit`), shadow box (`light_view_projection`, texel-snapped) and `plan_casters`; forge-webgl shadow map (lazy depth texture + framebuffer + depth program, depth pass with polygon offset, 3x3 PCF on unit 1, falls back to lit-only)
+- [x] Mo Venture v2: mid-air jump, reliable taps, gem fix, movers, juice, sun and shadows, campaign of four levels, on-screen touch controls
 - [ ] Phase 12: forge-physics (rigid bodies, sequential-impulse solver over a generic `Constraint` class, joints, sleeping, render interpolation, deterministic step, character controller)
 - [x] Web input: `forge_app::input` (`Input` resource, `app_frame_input`) + keyboard/pointer/wheel listeners in `forge_app::web`; demo WASD movement; browser run setup (`scripts/web-serve.sh`, `web/`, README.md)

@@ -20,7 +20,7 @@ pub use lib::app {
     CameraRig, camera_rig, rig_camera,
     app_schedule, app_renderer, app_camera, app_clear_color, app_frame_budget,
     app_initial_world, app_plugin_names,
-    app_set_renderer, app_set_camera, app_set_clear_color, app_set_initial_world,
+    app_set_renderer, app_set_camera, app_set_clear_color, app_set_initial_world, app_set_light,
     app_set_frames, app_add_plugin, app_add_system,
     app_assets, app_fixed_delta, app_set_assets, app_set_fixed_delta,
     Frame, frame_world, frame_commands, app_frame, app_frame_dt, app_frame_input, app_frame_viewed, app_plan,

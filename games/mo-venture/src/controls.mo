@@ -1,8 +1,11 @@
 // Mo Venture: the controls. Keys become an `Intent`, relative to the
 // camera: W/S (or Up/Down) run along the camera's facing on the ground,
-// A/D (or Left/Right) along its right. Space jumps (hold for height).
+// A/D (or Left/Right) along its right. Space jumps (hold for height);
+// Space again in the air jumps once more.
 // Shift held on the ground runs faster; pressed in the air, it dashes.
-// P toggles the autopilot.
+// P toggles the autopilot. 1-4 pick a level, Backspace restarts it, and Enter goes
+// on to the next level after the goal. C switches Mo between Xiaozhu the piggy
+// and Xiaomao the kitty (`game.mo`).
 
 use forge_app {
     Input, input_axis, input_key_held, input_key_pressed, world_input, Orbit, orbit_forward, orbit_right

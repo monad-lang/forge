@@ -100,22 +100,29 @@ pub def texture_repeats (t : TextureDesc) : Bool :=
 
 // ── Materials ───────────────────────────────────────────────────────
 
-/// How a mesh is shaded: the program, a tint multiplied into the output, and
-/// (for `shader_textured`) the texture sampled.
+/// How a mesh is shaded: the program, a tint multiplied into the output,
+/// (for `shader_textured`) the texture sampled, and whether the light
+/// applies. An `unlit` material shows its tint as is (a sun disc, a glow)
+/// and casts no shadow.
 #[derive Copy Clone Debug]
 pub struct Material {
     shader : ShaderKind,
     tint : Color,
-    texture : TextureHandle
+    texture : TextureHandle,
+    unlit : Bool
 }
 
 /// A single flat colour.
 pub def material_flat (tint : Color) : Material :=
-    { shader := shader_flat, tint := tint, texture := texture_none : Material }
+    { shader := shader_flat, tint := tint, texture := texture_none, unlit := false : Material }
+
+/// A flat colour the light does not touch, casting no shadow.
+pub def material_unlit (tint : Color) : Material :=
+    { shader := shader_flat, tint := tint, texture := texture_none, unlit := true : Material }
 
 /// A texture multiplied by `tint` (white leaves the texture as authored).
 pub def material_textured (texture : TextureHandle) (tint : Color) : Material :=
-    { shader := shader_textured, tint := tint, texture := texture : Material }
+    { shader := shader_textured, tint := tint, texture := texture, unlit := false : Material }
 
 /// What a draw falls back to when its material id is unknown: flat white, so
 /// the mesh is still visible and the mistake is obvious.
@@ -126,6 +133,8 @@ pub def material_shader (m : Material) : ShaderKind := m.shader
 pub def material_tint (m : Material) : Color := m.tint
 
 pub def material_texture (m : Material) : TextureHandle := m.texture
+
+pub def material_is_unlit (m : Material) : Bool := m.unlit
 
 // ── Assets ──────────────────────────────────────────────────────────
 

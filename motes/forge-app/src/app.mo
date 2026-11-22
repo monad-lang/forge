@@ -45,7 +45,8 @@ use forge_render {
     renderer_is_recording, camera_new, Camera, Color, color_clear,
     RenderCommand, extract, renderer_submit, renderer_present, camera_projection,
     camera_position,
-    Assets, assets_empty, FramePlan, frame_plan, plan_draw_count, count_draws
+    Assets, assets_empty, FramePlan, frame_plan, plan_draw_count, count_draws,
+    Light, world_set_light
 }
 use forge_math {
     Mat4, Vec3, vec3, mat4_identity, mat4_look_at, mat4_perspective, f64_abs
@@ -147,6 +148,10 @@ pub def app_set_camera (a : App) (c : Camera) : App := { a with camera := c }
 pub def app_set_clear_color (a : App) (c : Color) : App := { a with clear := c }
 
 pub def app_set_initial_world (a : App) (w : World) : App := { a with initial := w }
+
+/// The sun the app starts with (a `Light` resource in the initial world;
+/// systems can move or change it with `world_set_light`).
+pub def app_set_light (a : App) (l : Light) : App := { a with initial := world_set_light a.initial l }
 
 pub def app_set_assets (a : App) (assets : Assets) : App := { a with assets := assets }
 
@@ -432,6 +437,7 @@ def test_app_frame_viewed_picks_the_camera_after_systems : Bool :=
                     p.z == 9.0,
                 RenderCommand.clear_cmd _ => false,
                 RenderCommand.draw_mesh_cmd _ _ _ => false,
+                RenderCommand.set_light_cmd _ => false,
                 RenderCommand.present_cmd => false
             },
         Option.none => false

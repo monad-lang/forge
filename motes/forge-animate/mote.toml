@@ -1,0 +1,18 @@
+[mote]
+name = "forge_animate"
+version = "0.1.0"
+edition = "2026"
+
+# Animation (Phase 11): easing, keyframe tracks and clips, the `Animator`
+# component with loop modes and crossfade, and tweens. Native and pure.
+[dependencies.forge_core]
+workspace = true
+
+[dependencies.forge_math]
+workspace = true
+
+[dependencies.forge_scene]
+workspace = true
+
+[dependencies.forge_schedule]
+workspace = true

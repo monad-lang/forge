@@ -35,28 +35,30 @@ use std::list {}
 // ── Signal ──────────────────────────────────────────────────────────
 
 /// A value cell plus a version counter, bumped on every write so a reader can
-/// tell "changed since" without comparing payloads.
+/// tell "changed since" without comparing payloads. The constructor is
+/// `signal_mk`, not `mk`: `Signal.mk` is mis-resolved against `sys::Signal`
+/// (G17, PLAN.md).
 pub type Signal (A : Type) {
-    mk (value : Ref A, version : Ref U64)
+    signal_mk (value : Ref A, version : Ref U64)
 }
 
 /// A fresh signal holding `a`, at version 0.
 pub def signal_new (a : A) : IO (Shared (Signal A)) := do {
     let v <- Ref.new a;
     let n <- Ref.new 0u64;
-    return (Shared.of (Signal.mk v n))
+    return (Shared.of (Signal.signal_mk v n))
 }
 
 /// The current value.
 pub def signal_get (sh : Shared (Signal A)) : IO A :=
     match Shared.get sh {
-        Signal.mk v _ => Ref.get v
+        Signal.signal_mk v _ => Ref.get v
     }
 
 /// The current version (bumped once per `signal_set`).
 pub def signal_version (sh : Shared (Signal A)) : IO U64 :=
     match Shared.get sh {
-        Signal.mk _ n => Ref.get n
+        Signal.signal_mk _ n => Ref.get n
     }
 
 /// Store a new value and bump the version. The value store and the version
@@ -64,7 +66,7 @@ pub def signal_version (sh : Shared (Signal A)) : IO U64 :=
 /// old version, which is why `signal_set` should be called from one fiber.
 pub def signal_set (sh : Shared (Signal A)) (a : A) : IO Unit :=
     match Shared.get sh {
-        Signal.mk v n => do {
+        Signal.signal_mk v n => do {
             Ref.set v a;
             let _ <- Ref.update n (fn (x : U64) => U64.add x 1u64);
             return unit
@@ -74,7 +76,7 @@ pub def signal_set (sh : Shared (Signal A)) (a : A) : IO Unit :=
 /// Atomic read-modify-write of the value, bumping the version.
 pub def signal_update (sh : Shared (Signal A)) (f : A -> A) : IO A :=
     match Shared.get sh {
-        Signal.mk v n => do {
+        Signal.signal_mk v n => do {
             let new_v <- Ref.update v f;
             let _ <- Ref.update n (fn (x : U64) => U64.add x 1u64);
             return new_v

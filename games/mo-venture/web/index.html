@@ -21,6 +21,29 @@
     #help { left: 1rem; bottom: 1rem; font-size: 13px; }
     #help kbd { font: 12px ui-monospace, monospace; padding: 0 .3em; border: 1px solid #9ab;
                 border-radius: 3px; }
+    /* On-screen controls: shown on touch screens only (see the script). */
+    #touch { display: none; }
+    body.touch #touch { display: block; }
+    body.touch #help { display: none; }
+    #touch, #touch * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+                       touch-action: none; }
+    #stick { position: fixed; left: 1.2rem; bottom: 1.2rem; width: 9.5rem; height: 9.5rem;
+             border-radius: 50%; background: rgba(10, 20, 40, .28); border: 2px solid rgba(255,255,255,.35); }
+    #knob { position: absolute; left: 50%; top: 50%; width: 3.8rem; height: 3.8rem; margin: -1.9rem 0 0 -1.9rem;
+            border-radius: 50%; background: rgba(255,255,255,.55); }
+    .tbtn { position: fixed; display: flex; align-items: center; justify-content: center;
+            border-radius: 50%; background: rgba(10, 20, 40, .35); border: 2px solid rgba(255,255,255,.45);
+            color: #fff; font-weight: 700; font-size: 15px; }
+    .tbtn.on { background: rgba(255, 224, 102, .55); }
+    #b-jump { right: 1.4rem; bottom: 1.6rem; width: 5.4rem; height: 5.4rem; font-size: 17px; }
+    #b-dash { right: 7.6rem; bottom: 1.2rem; width: 4.2rem; height: 4.2rem; }
+    #b-camleft { right: 7.2rem; bottom: 6.6rem; width: 3rem; height: 3rem; }
+    #b-camright { right: 2.6rem; bottom: 8rem; width: 3rem; height: 3rem; }
+    .tsmall { top: 4.2rem; width: 2.6rem; height: 2.6rem; font-size: 13px; }
+    #b-pilot { right: 1rem; }
+    #b-restart { right: 4.1rem; }
+    #b-next { right: 7.2rem; }
+    #b-hero { right: 10.3rem; font-size: 17px; }
   </style>
 </head>
 <body>
@@ -34,10 +57,23 @@
   <div id="message" class="panel"></div>
   <div id="help" class="panel">
     <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows: run
-    &nbsp;·&nbsp; <kbd>Space</kbd>: jump (hold for height)
+    &nbsp;·&nbsp; <kbd>Space</kbd>: jump (hold for height, again in the air)
     &nbsp;·&nbsp; <kbd>Shift</kbd>: sprint / air dash
     &nbsp;·&nbsp; right-drag, <kbd>Q</kbd><kbd>E</kbd>: camera &nbsp;·&nbsp; wheel: zoom
-    &nbsp;·&nbsp; <kbd>P</kbd>: autopilot
+    &nbsp;·&nbsp; <kbd>P</kbd>: autopilot &nbsp;·&nbsp; <kbd>1</kbd>–<kbd>4</kbd>: level
+    &nbsp;·&nbsp; <kbd>Backspace</kbd>: restart &nbsp;·&nbsp; <kbd>Enter</kbd>: next level
+    &nbsp;·&nbsp; <kbd>C</kbd>: Xiaozhu the piggy / Xiaomao the kitty
+  </div>
+  <div id="touch" aria-hidden="true">
+    <div id="stick"><div id="knob"></div></div>
+    <div class="tbtn" id="b-jump" data-code="Space" data-key=" ">JUMP</div>
+    <div class="tbtn" id="b-dash" data-code="ShiftLeft" data-key="Shift">DASH</div>
+    <div class="tbtn" id="b-camleft" data-code="KeyQ" data-key="q">&#9664;</div>
+    <div class="tbtn" id="b-camright" data-code="KeyE" data-key="e">&#9654;</div>
+    <div class="tbtn tsmall" id="b-pilot" data-code="KeyP" data-key="p" title="autopilot">P</div>
+    <div class="tbtn tsmall" id="b-restart" data-code="Backspace" data-key="Backspace" title="restart">&#8634;</div>
+    <div class="tbtn tsmall" id="b-next" data-code="Enter" data-key="Enter" title="next level">&#9654;&#9654;</div>
+    <div class="tbtn tsmall" id="b-hero" data-code="KeyC" data-key="c" title="piggy / kitty">&#128049;</div>
   </div>
   <noscript>Mo Venture needs JavaScript and WebAssembly.</noscript>
   <script type="module">
@@ -51,10 +87,78 @@
           const v = canvas.getAttribute('data-hud-' + key);
           if (v !== null) document.getElementById(key).textContent = v;
         }
+        const name = canvas.getAttribute('data-hud-level-name');
+        const hero = canvas.getAttribute('data-hud-hero');
+        const kitty = hero === 'Xiaomao Mo';
+        let title = 'Mo Venture';
+        if (name !== null) title += ' · ' + name;
+        if (hero !== null) title += ' · ' + (kitty ? '\u{1F431} ' : '\u{1F437} ') + hero;
+        document.getElementById('title').textContent = title;
+        // The touch button shows the one C would switch TO.
+        const hb = document.getElementById('b-hero');
+        if (hb && hero !== null) hb.textContent = kitty ? '\u{1F437}' : '\u{1F431}';
       };
       new MutationObserver(show).observe(canvas, { attributes: true });
       canvas.focus();
     };
+    // ── On-screen controls ──
+    // The game reads the keyboard on `window` by `event.code`, so the touch
+    // controls are only page glue: each one sends the key it stands for.
+    // The stick maps to W/A/S/D (eight directions past a dead zone).
+    const send = (type, code, key) =>
+      window.dispatchEvent(new KeyboardEvent(type, { code, key, bubbles: true, cancelable: true }));
+    const held = new Set();
+    const hold = (code, key, on) => {
+      if (on === held.has(code)) return;
+      if (on) held.add(code); else held.delete(code);
+      send(on ? 'keydown' : 'keyup', code, key);
+    };
+    const touchUi = () => {
+      document.body.classList.add('touch');
+      for (const b of document.querySelectorAll('#touch .tbtn')) {
+        const { code, key } = b.dataset;
+        const press = (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId);
+                               b.classList.add('on'); hold(code, key, true); };
+        const release = (e) => { e.preventDefault(); b.classList.remove('on'); hold(code, key, false); };
+        b.addEventListener('pointerdown', press);
+        for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(t, release);
+        b.addEventListener('contextmenu', (e) => e.preventDefault());
+      }
+      const stick = document.getElementById('stick');
+      const knob = document.getElementById('knob');
+      let stickId = null;
+      const dirs = [['KeyW', 'w'], ['KeyA', 'a'], ['KeyS', 's'], ['KeyD', 'd']];
+      const steer = (dx, dy) => {
+        const r = stick.clientWidth / 2;
+        const len = Math.hypot(dx, dy);
+        const k = len > r ? r / len : 1;
+        knob.style.transform = `translate(${dx * k}px, ${dy * k}px)`;
+        const dead = len < r * 0.25;
+        // 22.5 degrees off an axis still counts toward it: eight directions.
+        const t = Math.tan(Math.PI / 8) * Math.max(Math.abs(dx), Math.abs(dy));
+        hold('KeyW', 'w', !dead && dy < 0 && Math.abs(dy) >= t);
+        hold('KeyS', 's', !dead && dy > 0 && Math.abs(dy) >= t);
+        hold('KeyA', 'a', !dead && dx < 0 && Math.abs(dx) >= t);
+        hold('KeyD', 'd', !dead && dx > 0 && Math.abs(dx) >= t);
+      };
+      const centre = () => { const b = stick.getBoundingClientRect();
+                             return [b.left + b.width / 2, b.top + b.height / 2]; };
+      stick.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); stickId = e.pointerId; stick.setPointerCapture(e.pointerId);
+        const [cx, cy] = centre(); steer(e.clientX - cx, e.clientY - cy);
+      });
+      stick.addEventListener('pointermove', (e) => {
+        if (e.pointerId !== stickId) return;
+        const [cx, cy] = centre(); steer(e.clientX - cx, e.clientY - cy);
+      });
+      const letGo = (e) => { if (e.pointerId !== stickId) return; stickId = null; steer(0, 0); };
+      for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) stick.addEventListener(t, letGo);
+      // Leaving the page drops every held key (the game also clears on blur).
+      window.addEventListener('blur', () => { for (const [c, k] of dirs) hold(c, k, false); });
+    };
+    if (window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) touchUi();
+    else window.addEventListener('touchstart', touchUi, { once: true });
+
     start('./app.wasm', '#app').then(bind).catch((err) => {
       document.getElementById('app').textContent = 'Could not load Mo Venture: ' + err;
     });

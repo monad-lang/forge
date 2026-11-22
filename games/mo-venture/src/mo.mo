@@ -7,11 +7,15 @@
 //    or from the autopilot (`bot.mo`);
 // 2. `mo_velocity` turns intent into velocity: momentum on the ground and
 //    in the air, jump with coyote time, buffering and a short-hop cut, one
-//    air dash per jump, gravity;
+//    mid-air jump and one air dash per airtime, gravity;
 // 3. `move_and_slide` moves Mo by `velocity * dt` through the level;
 // 4. `mo_landed` reads what the move touched (ground, ceiling).
 //
 // All of it is pure; `mo_system` just reads and writes the world.
+//
+// Moving platforms carry Mo: a platform that moved this frame records its
+// `Carrier` delta, and if Mo stood on it last frame, Mo moves by the same
+// delta before its own move. Jumping off keeps the platform's motion.
 
 use std::derive {}
 use init::copy {Copy}
@@ -20,10 +24,11 @@ use forge_core::ecs {World, Entity, Spawned, spawn, insert_component, get_compon
 use forge_core::query {query_entities}
 use forge_core::world_m {WorldM, WorldM.modify}
 use forge_math {
-    Vec3, vec3, v3_zero, v3_add, v3_sub, v3_scale, v3_length, v3_normalize, v3_lerp,
+    Vec3, vec3, v3_zero, v3_one, v3_add, v3_sub, v3_scale, v3_length, v3_normalize, v3_lerp,
     Quat, quat, f64_sqrt, f64_max, f64_min
 }
-use forge_scene {Transform, transform_new, transform_name, entity_transform}
+use forge_scene {Transform, transform_new, transform_name, entity_transform, find_named}
+use forge_animate {Easing, set_tween, tween_scale}
 use forge_schedule {world_time, time_delta}
 use forge_collide {
     Scene, Shape, shape_capsule, collision_scene, move_and_slide, MoveConfig, move_config_default,
@@ -82,15 +87,18 @@ pub def world_set_intent (world : World) (i : Intent) : World :=
 // ── State ───────────────────────────────────────────────────────────
 
 /// Mo's motion state. Timers count seconds since an event (large when it
-/// is long past). `facing` is a unit vector on the ground plane. `Copy`.
+/// is long past). `facing` is a unit vector on the ground plane.
+/// `air_used` counts mid-air jumps this airtime. `Copy`.
 #[derive Copy Clone]
 pub struct MoState {
     vel : Vec3,
     grounded : Bool,
     since_ground : F64,
     since_press : F64,
+    since_jump : F64,
     jumping : Bool,
     dashed : Bool,
+    air_used : I64,
     facing : Vec3
 }
 
@@ -98,13 +106,13 @@ pub def long_ago : F64 := 100.0
 
 /// At rest, on the ground, facing -z (into the level).
 pub def mo_rest : MoState :=
-    { vel := v3_zero, grounded := true, since_ground := 0.0, since_press := long_ago, jumping := false,
-      dashed := false, facing := vec3 0.0 0.0 (0.0 - 1.0) : MoState }
+    { vel := v3_zero, grounded := true, since_ground := 0.0, since_press := long_ago, since_jump := long_ago,
+      jumping := false, dashed := false, air_used := 0, facing := vec3 0.0 0.0 (0.0 - 1.0) : MoState }
 
 /// Just left the ground (this frame), not having jumped.
 pub def mo_airborne : MoState :=
-    { vel := v3_zero, grounded := false, since_ground := 0.0, since_press := long_ago, jumping := false,
-      dashed := false, facing := vec3 0.0 0.0 (0.0 - 1.0) : MoState }
+    { vel := v3_zero, grounded := false, since_ground := 0.0, since_press := long_ago, since_jump := long_ago,
+      jumping := false, dashed := false, air_used := 0, facing := vec3 0.0 0.0 (0.0 - 1.0) : MoState }
 
 pub def mo_vel (s : MoState) : Vec3 := s.vel
 
@@ -114,13 +122,21 @@ pub def mo_dashed (s : MoState) : Bool := s.dashed
 
 pub def mo_facing (s : MoState) : Vec3 := s.facing
 
-def mk (vel : Vec3) (grounded : Bool) (since_ground : F64) (since_press : F64) (jumping : Bool)
-    (dashed : Bool) (facing : Vec3) : MoState :=
+pub def mo_air_used (s : MoState) : I64 := s.air_used
+
+def mk (vel : Vec3) (grounded : Bool) (since_ground : F64) (since_press : F64) (since_jump : F64)
+    (jumping : Bool) (dashed : Bool) (air_used : I64) (facing : Vec3) : MoState :=
     { vel := vel, grounded := grounded, since_ground := since_ground, since_press := since_press,
-      jumping := jumping, dashed := dashed, facing := facing : MoState }
+      since_jump := since_jump, jumping := jumping, dashed := dashed, air_used := air_used,
+      facing := facing : MoState }
 
 pub def mo_with_vel (s : MoState) (v : Vec3) : MoState :=
-    mk v s.grounded s.since_ground s.since_press s.jumping s.dashed s.facing
+    mk v s.grounded s.since_ground s.since_press s.since_jump s.jumping s.dashed s.air_used s.facing
+
+/// `s` with its mid-air jumps for this airtime marked used (tests and the
+/// autopilot's reach model).
+pub def mo_with_air_used (s : MoState) (n : I64) : MoState :=
+    mk s.vel s.grounded s.since_ground s.since_press s.since_jump s.jumping s.dashed n s.facing
 
 // ── Velocity ────────────────────────────────────────────────────────
 
@@ -161,17 +177,33 @@ def turn (t : Tune) (facing : Vec3) (vel : Vec3) (dt : F64) : Vec3 :=
         if fl < 0.0001 then v3_scale h (1.0 / len) else v3_scale f (1.0 / fl)
 
 /// One frame of velocity, before the move.
+///
+/// Jumps: a press counts for `buffer` seconds and starts a ground jump while
+/// Mo is grounded or left the ground under `coyote` seconds ago. Otherwise,
+/// in the air, a fresh press spends one of `air_jumps` (the rising speed is
+/// replaced, not added to). Releasing Space while rising cuts the rise once
+/// (a short hop), but only after `min_hop` seconds of rise: a tap that goes
+/// down and up inside one frame, or a buffered press released before the
+/// landing, used to be cut on the jump's first frame into a hop so small it
+/// looked like a dropped input.
 pub def mo_velocity (t : Tune) (s : MoState) (i : Intent) (dt : F64) : MoState :=
     let since_press : F64 := if i.jump_pressed then 0.0 else s.since_press + dt in
     let since_ground : F64 := if s.grounded then 0.0 else s.since_ground + dt in
     let v0 : Vec3 := steer t s i dt in
     let jump_now : Bool := since_press <= t.buffer && since_ground <= t.coyote in
-    let v1 : Vec3 := if jump_now then vec3 v0.x t.jump_speed v0.z else v0 in
-    let jumping1 : Bool := if jump_now then true else s.jumping in
-    // A released jump while rising is cut once (a short hop).
-    let cut : Bool := jumping1 && Bool.not i.jump_held && v1.y > 0.0 in
+    let air_jump : Bool := Bool.not jump_now && i.jump_pressed && Bool.not s.grounded && s.air_used < t.air_jumps in
+    let launched : Bool := jump_now || air_jump in
+    let v1 : Vec3 :=
+        if jump_now then vec3 v0.x t.jump_speed v0.z
+        else if air_jump then vec3 v0.x t.air_jump_speed v0.z
+        else v0 in
+    let since_jump : F64 := if launched then 0.0 else s.since_jump + dt in
+    let jumping1 : Bool := if launched then true else s.jumping in
+    // A released jump while rising is cut once (a short hop), never before
+    // `min_hop` seconds of rise.
+    let cut : Bool := jumping1 && Bool.not i.jump_held && v1.y > 0.0 && since_jump >= t.min_hop in
     let v2 : Vec3 := if cut then vec3 v1.x (v1.y * t.jump_cut) v1.z else v1 in
-    let airborne : Bool := jump_now || Bool.not s.grounded in
+    let airborne : Bool := launched || Bool.not s.grounded in
     let dash_now : Bool := i.dash_pressed && airborne && Bool.not s.dashed in
     let dir0 : Vec3 := clamp_unit (intent_move i) in
     let dir : Vec3 := if v3_length dir0 > 0.1 then v3_normalize dir0 else s.facing in
@@ -183,20 +215,23 @@ pub def mo_velocity (t : Tune) (s : MoState) (i : Intent) (dt : F64) : MoState :
     let jumping2 : Bool := (jumping1 && Bool.not cut && vy > 0.0) && Bool.not dash_now in
     mk vel (s.grounded && Bool.not jump_now)
         (if jump_now then long_ago else since_ground)
-        (if jump_now then long_ago else since_press)
+        (if launched then long_ago else since_press)
+        since_jump
         jumping2
         (s.dashed || dash_now)
+        (if air_jump then s.air_used + 1 else s.air_used)
         (turn t s.facing vel dt)
 
-/// After the move: ground and ceiling contacts.
+/// After the move: ground and ceiling contacts. Landing gives back the
+/// dash and the mid-air jumps.
 pub def mo_landed (s : MoState) (sl : Slide) : MoState :=
     let g : Bool := slide_grounded sl in
     let vy : F64 :=
         if g && s.vel.y < 0.0 then 0.0
         else if slide_hit_ceiling sl && s.vel.y > 0.0 then 0.0
         else s.vel.y in
-    mk (vec3 s.vel.x vy s.vel.z) g s.since_ground s.since_press (s.jumping && Bool.not g)
-       (s.dashed && Bool.not g) s.facing
+    mk (vec3 s.vel.x vy s.vel.z) g s.since_ground s.since_press s.since_jump (s.jumping && Bool.not g)
+       (s.dashed && Bool.not g) (if g then 0 else s.air_used) s.facing
 
 // ── Moving ──────────────────────────────────────────────────────────
 
@@ -265,10 +300,113 @@ pub def place_mo (world : World) (e : Entity) (p : Vec3) (facing : Vec3) : World
         Option.none => world
     }
 
+// ── Moving platforms ────────────────────────────────────────────────
+
+/// How far a moving platform moved this frame. `Copy`.
+#[derive Copy Clone]
+pub struct Carrier {
+    last : Vec3,
+    delta : Vec3
+}
+
+pub def carrier_name : String := "mo.carrier"
+
+/// A platform that starts at `p`, not yet moved.
+pub def carrier_at (p : Vec3) : Carrier := { last := p, delta := v3_zero : Carrier }
+
+def as_carrier (v : Any) : Carrier :=
+    match v { Any.any x => let c : Carrier := x in c }
+
+/// `e`'s move this frame (zero if it is no carrier).
+pub def carrier_delta (world : World) (e : Entity) : Vec3 :=
+    match get_component_named world e carrier_name {
+        Option.some v => let c : Carrier := as_carrier v in c.delta,
+        Option.none => v3_zero
+    }
+
+def update_carrier (world : World) (e : Entity) : World :=
+    match get_component_named world e carrier_name {
+        Option.some v =>
+            let c : Carrier := as_carrier v in
+            let p : Vec3 := mo_position world e in
+            insert_component world e carrier_name (Any.any { last := p, delta := v3_sub p c.last : Carrier }),
+        Option.none => world
+    }
+
+#[terminating]
+def update_carriers (world : World) (es : List Entity) : World :=
+    match es {
+        List.empty => world,
+        List.cons e rest => update_carriers (update_carrier world e) rest
+    }
+
+/// After the animators moved the platforms: each carrier's delta.
+pub def carriers_step (world : World) : World :=
+    update_carriers world (query_entities world [carrier_name, transform_name] [])
+
+/// What Mo stood on at the end of last frame. `Copy`.
+#[derive Copy Clone]
+struct Footing {
+    on : Bool,
+    e : Entity
+}
+
+def footing_name : String := "mo.footing"
+
+def as_footing (v : Any) : Footing :=
+    match v { Any.any x => let f : Footing := x in f }
+
+/// The carrier delta under Mo (`e`), from what it stood on last frame.
+def carried (world : World) (e : Entity) : Vec3 :=
+    match get_component_named world e footing_name {
+        Option.some v =>
+            let f : Footing := as_footing v in
+            if f.on then carrier_delta world f.e else v3_zero,
+        Option.none => v3_zero
+    }
+
+def set_footing (world : World) (e : Entity) (g : Option Entity) : World :=
+    match g {
+        Option.some x => insert_component world e footing_name (Any.any { on := true, e := x : Footing }),
+        Option.none => insert_component world e footing_name (Any.any { on := false, e := e : Footing })
+    }
+
+// ── Squash and stretch ──────────────────────────────────────────────
+
+/// The name of Mo's body part (the one that squashes).
+pub def body_name : String := "body"
+
+def squash (world : World) (e : Entity) (from : Vec3) (seconds : F64) : World :=
+    match find_named world e body_name {
+        Option.some b => set_tween world b (tween_scale from v3_one seconds Easing.quad_out),
+        Option.none => world
+    }
+
+/// Stretch on take-off, squash on landing.
+def juice (world : World) (e : Entity) (before : MoState) (after : MoState) : World :=
+    if before.grounded && Bool.not after.grounded && after.vel.y > 0.0
+    then squash world e (vec3 0.8 1.25 0.8) 0.25
+    else if Bool.not before.grounded && after.grounded
+    then squash world e (vec3 1.25 0.75 1.25) 0.2
+    else world
+
+// ── The step ────────────────────────────────────────────────────────
+
+/// `s` with the carrier's motion `carry` (over `dt`) added on take-off.
+def keep_momentum (before : MoState) (s : MoState) (carry : Vec3) (dt : F64) : MoState :=
+    if before.grounded && Bool.not s.grounded && dt > 0.0
+    then mo_with_vel s (v3_add s.vel (vec3 (carry.x / dt) 0.0 (carry.z / dt)))
+    else s
+
 def step_mo (world : World) (e : Entity) : World :=
-    let st : MoStep := mo_step tune (collision_scene world) (Option.some e) (entity_mo world e)
-                             (mo_position world e) (world_intent world) (time_delta (world_time world)) in
-    set_mo (place_mo world e st.pos st.state.facing) e st.state
+    let dt : F64 := time_delta (world_time world) in
+    let s0 : MoState := entity_mo world e in
+    let carry : Vec3 := if s0.grounded then carried world e else v3_zero in
+    let st : MoStep := mo_step tune (collision_scene world) (Option.some e) s0
+                             (v3_add (mo_position world e) carry) (world_intent world) dt in
+    let s1 : MoState := keep_momentum s0 st.state carry dt in
+    let w1 : World := set_footing (set_mo (place_mo world e st.pos s1.facing) e s1) e (slide_ground st.slide) in
+    juice w1 e s0 s1
 
 pub def mo_move (world : World) : World :=
     match find_mo world {

@@ -18,7 +18,7 @@ pub use lib::command {
     color_r, color_g, color_b, color_a,
     Camera, camera_new, camera_view, camera_projection, camera_position,
     camera_view_projection,
-    RenderCommand, clear, set_camera, draw_mesh, present_cmd_unit,
+    RenderCommand, clear, set_camera, set_light, draw_mesh, present_cmd_unit,
     command_kind, is_draw, count_draws
 }
 
@@ -46,8 +46,8 @@ pub use lib::material {
     TextureFilter, filter_nearest, filter_linear, TextureWrap, wrap_repeat, wrap_clamp,
     TextureDesc, texture_desc, texture_from_url, texture_url, texture_filter,
     texture_wrap, texture_is_linear, texture_repeats,
-    Material, material_flat, material_textured, material_default, material_shader,
-    material_tint, material_texture,
+    Material, material_flat, material_unlit, material_textured, material_default, material_shader,
+    material_tint, material_texture, material_is_unlit,
     Assets, assets_empty, MeshAdded, MaterialAdded, TextureAdded,
     assets_add_mesh, assets_add_material, assets_add_texture,
     assets_mesh, assets_material, assets_texture, assets_mesh_ids, assets_texture_ids,
@@ -57,10 +57,18 @@ pub use lib::material {
 
 pub use lib::plan {
     DrawCall, draw_call_mesh, draw_call_shader, draw_call_tint, draw_call_texture,
-    draw_call_model,
+    draw_call_model, draw_call_unlit,
     FramePlan, plan_empty, plan_clears, plan_clear_color, plan_view, plan_projection,
     plan_view_projection, plan_draws, plan_draw_count, plan_skipped, plan_presents,
+    plan_light, plan_shadows, plan_light_view_projection, plan_casters,
     resolve_draw, frame_plan, camera_screen_ray
+}
+
+pub use lib::light {
+    Light, light_sun, light_default, light_with_shadows, light_at, light_toward, light_color,
+    light_intensity, light_ambient, light_shadows, light_focus, light_extent, light_depth,
+    light_map_size, light_diffuse, light_texel, light_snapped_focus, light_view, light_projection,
+    light_view_projection, light_name, world_light_opt, world_light, world_set_light
 }
 
 pub use lib::pick {

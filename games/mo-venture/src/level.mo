@@ -8,6 +8,10 @@
 //
 // `route` is the autopilot's list of landing spots (platform tops), one
 // marked `act_dash` where the gap needs the air dash.
+//
+// A platform may MOVE: `mover` gives it a second centre, and it travels
+// there and back (`mover_dwell` s at each end, `mover_travel` s between),
+// carrying Mo. The other levels live in `levels.mo`.
 
 use std::derive {}
 use init::copy {Copy}
@@ -22,18 +26,41 @@ pub def kind_wood : I64 := 2
 
 pub def kind_gold : I64 := 3
 
-/// A box platform: centre, half extents and kind. `Copy`.
+/// A box platform: centre, half extents and kind. A moving one also has
+/// the far end of its path, `to` (a still one has `to = center`). `Copy`.
 #[derive Copy Clone]
 pub struct Plat {
     center : Vec3,
     half : Vec3,
-    kind : I64
+    kind : I64,
+    to : Vec3,
+    moves : Bool
 }
 
 pub def plat (cx : F64) (cy : F64) (cz : F64) (hx : F64) (hy : F64) (hz : F64) (kind : I64) : Plat :=
-    { center := vec3 cx cy cz, half := vec3 hx hy hz, kind := kind : Plat }
+    { center := vec3 cx cy cz, half := vec3 hx hy hz, kind := kind, to := vec3 cx cy cz, moves := false : Plat }
+
+/// A platform that shuttles between its centre and `(tx, ty, tz)`.
+pub def mover (cx : F64) (cy : F64) (cz : F64) (hx : F64) (hy : F64) (hz : F64) (kind : I64)
+    (tx : F64) (ty : F64) (tz : F64) : Plat :=
+    { center := vec3 cx cy cz, half := vec3 hx hy hz, kind := kind, to := vec3 tx ty tz, moves := true : Plat }
 
 pub def plat_top (p : Plat) : F64 := p.center.y + p.half.y
+
+pub def plat_moves (p : Plat) : Bool := p.moves
+
+pub def plat_to (p : Plat) : Vec3 := p.to
+
+/// The same platform at the far end of its path (itself if it is still).
+pub def plat_at_end (p : Plat) : Plat :=
+    { center := p.to, half := p.half, kind := p.kind, to := p.to, moves := p.moves : Plat }
+
+/// A mover rests `2 * mover_dwell` s at each end and takes `mover_travel`
+/// s between them, so a whole there-and-back cycle is
+/// `2 * (2 * mover_dwell + mover_travel)` = 10 s.
+pub def mover_dwell : F64 := 1.0
+
+pub def mover_travel : F64 := 3.0
 
 /// Route actions.
 pub def act_walk : I64 := 0
@@ -42,6 +69,19 @@ pub def act_jump : I64 := 1
 
 pub def act_dash : I64 := 2
 
+/// Jump, then jump again in the air at the top of the first.
+pub def act_double : I64 := 3
+
+/// Jump, air-jump, and air-dash at the top of the second.
+pub def act_double_dash : I64 := 4
+
+/// A spot on a moving platform's near end: wait until the platform is
+/// there (ground under the spot), then jump on.
+pub def act_wait : I64 := 5
+
+/// The moving platform's far end: stand still and let it carry Mo there.
+pub def act_ride : I64 := 6
+
 /// A landing spot on a platform top, and how to get there. `Copy`.
 #[derive Copy Clone]
 pub struct Way {
@@ -49,7 +89,6 @@ pub struct Way {
     act : I64
 }
 
-def way (x : F64) (y : F64) (z : F64) (act : I64) : Way := { at := vec3 x y z, act := act : Way }
 
 pub def way_at (w : Way) : Vec3 := w.at
 
@@ -57,6 +96,7 @@ pub def way_act (w : Way) : I64 := w.act
 
 /// A whole level. `Copy` (identity: persistent lists).
 pub struct Level {
+    name : String,
     plats : List Plat,
     sparks : List Vec3,
     posts : List Vec3,
@@ -69,6 +109,8 @@ pub struct Level {
 pub instance Copy Level {
     def copy (l : Level) : Pair Level Level := Pair.pair l l
 }
+
+pub def level_name (l : Level) : String := l.name
 
 pub def level_plats (l : Level) : List Plat := l.plats
 
@@ -86,13 +128,15 @@ pub def level_route (l : Level) : List Way := l.route
 
 pub def level_spark_count (l : Level) : I64 := List.length l.sparks
 
-pub def level_new (plats : List Plat) (sparks : List Vec3) (posts : List Vec3) (goal : Vec3)
+pub def level_new (name : String) (plats : List Plat) (sparks : List Vec3) (posts : List Vec3) (goal : Vec3)
     (start : Vec3) (kill_y : F64) (route : List Way) : Level :=
-    { plats := plats, sparks := sparks, posts := posts, goal := goal, start := start,
+    { name := name, plats := plats, sparks := sparks, posts := posts, goal := goal, start := start,
       kill_y := kill_y, route := route
       : Level }
 
-def n (x : F64) : F64 := 0.0 - x
+pub def way (x : F64) (y : F64) (z : F64) (act : I64) : Way := { at := vec3 x y z, act := act : Way }
+
+pub def n (x : F64) : F64 := 0.0 - x
 
 // ── Skyway ──────────────────────────────────────────────────────────
 
@@ -150,13 +194,13 @@ def skyway_route : List Way :=
 
 /// The Skyway: Mo starts on the island facing -z.
 pub def skyway : Level :=
-    level_new skyway_plats skyway_sparks skyway_posts (vec3 (n 3.0) 5.0 (n 62.5)) (vec3 0.0 0.0 1.5)
+    level_new "Skyway" skyway_plats skyway_sparks skyway_posts (vec3 (n 3.0) 5.0 (n 62.5)) (vec3 0.0 0.0 1.5)
               (n 8.0) skyway_route
 
 /// A three-platform level for quick tests: walk, jump a 1.5 gap, step up a
 /// 0.6 rise with a jump, reach the goal. One spark on the way.
 pub def tiny_level : Level :=
-    level_new
+    level_new "Tiny"
         [ plat 0.0 (n 0.5) 0.0 2.0 0.5 2.0 kind_grass,
           plat 0.0 (n 0.5) (n 5.5) 1.5 0.5 1.5 kind_grass,
           plat 0.0 0.1 (n 10.0) 1.5 0.5 1.5 kind_gold ]

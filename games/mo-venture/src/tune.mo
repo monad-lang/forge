@@ -20,13 +20,20 @@ pub struct Tune {
     dash_speed : F64,
     dash_lift : F64,
     max_fall : F64,
-    turn_rate : F64
+    turn_rate : F64,
+    min_hop : F64,
+    air_jumps : I64,
+    air_jump_speed : F64
 }
 
 /// The game's tuning:
 /// - a jump reaches 9^2 / (2 * 25) = 1.62 units and lasts 0.72 s on the flat;
 /// - running is 7 u/s (10 with Shift on the ground), reached in about 0.25 s;
-/// - releasing Space early halves the rising speed (a short hop);
+/// - releasing Space early halves the rising speed (a short hop), but never
+///   before 0.12 s of rise, so a tap (down and up inside one frame) or a
+///   buffered press released before landing still hops about 1.1 units;
+/// - one mid-air jump per airtime (Space again in the air): 8 u/s up, a
+///   further 1.28 units from where it starts;
 /// - a jump still works 0.1 s after leaving a ledge (coyote time), and a
 ///   press up to 0.12 s before landing is kept (jump buffer);
 /// - one air dash per jump: 13 u/s along Mo's facing plus a small lift.
@@ -34,7 +41,7 @@ pub def tune : Tune :=
     { gravity := 25.0, jump_speed := 9.0, jump_cut := 0.5, run_speed := 7.0, sprint_speed := 10.0,
       ground_accel := 30.0, ground_friction := 40.0, air_accel := 12.0,
       coyote := 0.1, buffer := 0.12, dash_speed := 13.0, dash_lift := 3.0, max_fall := 20.0,
-      turn_rate := 12.0
+      turn_rate := 12.0, min_hop := 0.12, air_jumps := 1, air_jump_speed := 8.0
       : Tune }
 
 /// Mo's collider: a capsule of radius 0.35 around a 0.7 segment, so 1.4
