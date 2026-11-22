@@ -2,11 +2,41 @@
 version = 1
 
 [[mote]]
-name = "web_wasm"
+name = "oak"
 version = "0.1.0"
-source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/web_wasm#4916d8faa4a689368c5a4ea98ac5d293d2d2160f"
+source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/oak#aaf39e36ff48349dc2f92133bb25d235dd33d447"
 git_url = "https://github.com/monad-lang/monad.git"
 git_ref = "branch:main"
-git_commit = "4916d8faa4a689368c5a4ea98ac5d293d2d2160f"
+git_commit = "aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_subdir = "motes/oak"
+checksum = "sha256:2ff5567cb8c8f320b615402463b0aff8eca24d6eb2978c4bbbce8053f628cbbb"
+
+[[mote]]
+name = "oak_ui"
+version = "0.1.0"
+source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/oak_ui#aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_url = "https://github.com/monad-lang/monad.git"
+git_ref = "branch:main"
+git_commit = "aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_subdir = "motes/oak_ui"
+checksum = "sha256:b7cc17e22eded1381ba7d93a76770b5d349417eebc7e9b077c2a9ebece9481b9"
+
+[[mote]]
+name = "oak_wasm"
+version = "0.1.0"
+source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/oak_wasm#aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_url = "https://github.com/monad-lang/monad.git"
+git_ref = "branch:main"
+git_commit = "aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_subdir = "motes/oak_wasm"
+checksum = "sha256:73334d3d992d6f80ed729b05833ec49ee918145671c297adc644d229383211ec"
+
+[[mote]]
+name = "web_wasm"
+version = "0.1.0"
+source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/web_wasm#aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_url = "https://github.com/monad-lang/monad.git"
+git_ref = "branch:main"
+git_commit = "aaf39e36ff48349dc2f92133bb25d235dd33d447"
 git_subdir = "motes/web_wasm"
-checksum = "sha256:482188b6a1fc6781ba28ec0971b8c6cce6f72daeabbb0955150d7d23bf148c2d"
+checksum = "sha256:6230a8e5e1baeb12dffc6e4f24f3c4211ac0457788bbe1688c65c38a62d2c89b"

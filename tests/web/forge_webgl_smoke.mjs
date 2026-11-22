@@ -16,7 +16,7 @@
 //     still loading, so every draw uses the flat program;
 //   - the floor image arrives: it is uploaded once and the floor draw binds it;
 //   - picking: a click at the centre picks an entity, the empty top-left
-//     corner picks nothing (`data-picked`);
+//     corner picks nothing (the hidden `#picked` span);
 //   - input: holding KeyD (a `window` keydown) moves the root cube along
 //     the camera's right by speed * dt in the next frame; after keyup it
 //     stays put; Space's default (page scroll) is prevented;
@@ -142,11 +142,18 @@ const f3 = frame(1032);
 if (count(f3, 'texImage2D') !== 0) fail('the floor image was uploaded twice');
 
 // ── picking ──
+// The pick lands in the Oak model (`#picked`) a batch after the click.
+const picked = () => {
+  const n = byId('picked');
+  return n ? n.textContent.trim() : undefined;
+};
 canvas.fire('click', { offsetX: 200, offsetY: 150 });
-const centre = canvas.attrs['data-picked'];
+frame(1000);
+const centre = picked();
 if (centre === undefined || Number(centre) < 0) fail(`a centre click picked ${JSON.stringify(centre)}`);
 canvas.fire('click', { offsetX: 1, offsetY: 1 });
-if (canvas.attrs['data-picked'] !== '-1') fail(`an empty-corner click picked ${canvas.attrs['data-picked']}`);
+frame(1000);
+if (picked() !== '-1') fail(`an empty-corner click picked ${picked()}`);
 
 // ── input ──
 // The root cube sits at the origin with identity rotation about x/z, so its
@@ -186,8 +193,9 @@ canvas.fire('wheel', { deltaY: 100, deltaMode: 0 });
 if (mats(frame(1548)) === still) fail('the wheel did not zoom');
 const menu = canvas.fire('contextmenu', { button: 2 });
 if (!menu.defaultPrevented) fail('the canvas context menu was not suppressed');
-const space = window.fire('keydown', { code: 'Space', key: ' ' });
-if (!space.defaultPrevented) fail('Space did not have its default (scroll) prevented');
+// Keys are Oak window subscriptions now, so they cannot preventDefault; the
+// page holds still with `overflow: hidden` instead.
+window.fire('keydown', { code: 'Space', key: ' ' });
 window.fire('keyup', { code: 'Space', key: ' ' });
 canvas.fire('pointermove', { offsetX: 10, offsetY: 10, pointerType: 'mouse' });
 canvas.fire('pointerdown', { offsetX: 12, offsetY: 10, button: 0, buttons: 1, pointerType: 'mouse' });

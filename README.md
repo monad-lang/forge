@@ -58,7 +58,10 @@ monad's web collector (`nightly-2026-11-19-b0fe09df` or later, PLAN.md gap
 G13). An older `monad` links the old runtime and fails with "undefined
 symbol: monad_export_enter"; run `monadup default`.
 
-Mo, a small blue explorer with an antenna, plays four levels:
+Mo plays six levels. Xiaozhu (小猪) and Xiaomao (小猫) travel together:
+you control one and the other follows; `C` swaps which. They have different
+abilities -- Xiaozhu body-slams and breaks crates, Xiaomao climbs walls and
+spins -- and the last two levels need both:
 
 1. **Skyway**: floating platforms, stairs, a narrow bridge, a climb, a gap
    that needs the air dash and a high ledge.
@@ -67,10 +70,12 @@ Mo, a small blue explorer with an antenna, plays four levels:
 3. **Drift Docks**: a shuttle, an elevator and a ferry over the void. Wait
    for a platform, ride it, step off.
 4. **Sun Spire**: a climb that needs all of it.
+5. **Vine Wall**: a five-unit wall; only Xiaomao can climb it.
+6. **Brick Yard**: a wall of crates to slam, then a switch to spin.
 
-Mo is either Xiaozhu (小猪), a pink piggy, or Xiaomao (小猫), a ginger
-kitty; press `C` to switch at any time (the run carries on). Each level has
-sparks to collect, two checkpoints and a goal beacon. A warm
+Zhu is the pink piggy, Mao the ginger kitty; the companion is always the
+other one. Each level has sparks to collect, two checkpoints and a goal
+beacon. A warm
 sun lights the scene and casts shadows (a shadow map; on WebGL1 without
 `WEBGL_depth_texture` the scene is lit without them).
 
@@ -83,16 +88,18 @@ sun lights the scene and casts shadows (a shadow map; on WebGL1 without
 | mouse wheel | zoom |
 | `P` | autopilot: Mo plays the level by itself |
 | `Enter` | after the goal: the next level |
-| `1` to `4` | play that level |
+| `1` to `6` | play that level |
 | `Backspace` | restart the level |
-| `C` | switch Mo between Xiaozhu the piggy and Xiaomao the kitty |
+| `X` | the controlled hero's ability: Xiaozhu slams (in the air; breaks crates), Xiaomao spins (trips switches). Xiaomao also climbs a climbable wall automatically while running into it |
+| `C` | swap control between Xiaozhu and Xiaomao; the other follows |
 
 On a touch screen the page shows on-screen controls instead of the key
 list: a stick on the left to run, `JUMP` and `DASH` on the right (they act
 like `Space` and `Shift`, so tap `JUMP` again in the air for the second
 jump), ◀ ▶ to turn the camera, and small buttons for the autopilot (`P`),
-restart (↺), the next level (▶▶) and the hero (🐱 / 🐷, like `C`). They are page glue in
-`games/mo-venture/web/index.html` that sends the same key events.
+restart (↺), the next level (▶▶), the ability (`SLAM` / `SPIN`, like `X`)
+and `SWAP` (like `C`). The page is rendered by the game itself as an Oak
+view (`motes/forge-app/src/web.mo`); `web/index.html` is only the loader.
 
 Falling off sends Mo back to the last checkpoint. The HUD shows the level,
 sparks, time and falls.

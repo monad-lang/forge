@@ -929,7 +929,7 @@ selection) and the cost of persistent lists in the broad phase. Budget: 200
 colliders at 60 Hz in wasm, checked with a bench before Phase 12 builds on
 it.
 
-### Mo Venture — the example game — **v2 done**
+### Mo Venture — the example game — **v3 done**
 
 `games/mo-venture`: a 3D platformer starring Mo, forge's acceptance test.
 Each engine phase lands with the game features that need it.
@@ -980,19 +980,48 @@ Each engine phase lands with the game features that need it.
     camera ◀ ▶ and autopilot/restart/next buttons. It is page glue in
     `web/index.html` that sends the same `KeyboardEvent`s the keys do, so
     the game itself is unchanged.
-  - **Heroes.** Mo is Xiaozhu the piggy (default) or Xiaomao the kitty
-    (`look.mo`: `dress_mo`). `C` (or the 🐱/🐷 touch button) switches in
-    place by re-dressing the root's children (`redress_mo`), so the run
-    carries on. The choice lives on the `Campaign` and survives level
-    changes. Only the look differs.
+  - **Heroes.** Xiaozhu the piggy and Xiaomao the kitty travel together
+    (`look.mo`: `dress_mo`). One is controlled, the other follows, and `C`
+    swaps (`mo.mo`: role markers, `mo_swap`). Both are spawned in every
+    level; only the controlled one collects.
   - **Levels.** A `Campaign` of four: Skyway, Cloud Steps (air jump),
     Drift Docks (movers) and Sun Spire (everything). `1`-`4` pick a level,
     `Backspace` restarts it, and Enter goes on after the goal. The
     autopilot also handles `act_double`, `act_double_dash`, `act_wait` and
     `act_ride`.
   - **Still to come:** a run cycle.
-- **With Phase 12:** pushable crates (one ledge needs a crate), bounce
-  pads, a seesaw on a hinge.
+- **v3 (companions and abilities, 2026-11-22).**
+  - **Two characters.** Every level spawns both heroes: the player-marked
+    root is controlled, the companion-marked one follows. `find_mo`
+    returns the controlled one, so the camera, rules, bot and HUD are
+    unchanged. The follower steers to a spot behind the player, jumps
+    gaps with the autopilot's probes, and is leashed back when stranded
+    (`companion.mo`). Characters do not block each other (collision
+    layers).
+  - **Abilities.** `X` is contextual (`hero.mo`, `mo.mo`): Xiaozhu's
+    body slam falls at 24 u/s and breaks crates it lands among; Xiaomao's
+    spin trips switches. Xiaomao also climbs a climbable wall
+    automatically while running into it: a short `raycast` from the
+    capsule along the push direction (the controller reports a wall but no
+    normal), with the wall on the `layer_climb` bit.
+  - **Puzzles.** Level data gains climb walls, crates, switches and gates
+    (`level_puzzles`, additive so the first four levels are untouched).
+    Two new levels, Vine Wall (climb) and Brick Yard (slam, then spin),
+    are in the campaign; the autopilot's route learns
+    `act_as_kitty`/`act_as_piggy`, `act_climb`, `act_slam` and `act_spin`.
+  - **UI.** The page is now an Oak program (`forge_app::web`): canvas,
+    HUD, help and the touch controls (stick, JUMP, DASH, camera, ability,
+    SWAP, autopilot, restart, next) are `Oak.Node`s drawn from the model;
+    `web/index.html` is only the loader.
+  - **Next: two players over the web.** monad has a browser WebSocket
+    client (`web_wasm::websocket`, `oak Subscription.websocket`,
+    `Command.ws_send`). A co-op mode needs a pin at or past
+    `5d54cd68` (this pin, `6ff8cdb0`, predates it): the host runs the
+    game authoritatively, clients send their hero's intent, and the
+    companion's follow AI is replaced by player 2. The per-entity intent
+    split above is the groundwork.
+  - **Still ahead:** enemies, a run cycle, and a physics pass (Phase 12)
+    for pushable crates.
 
 ### Phase 11: forge-animate — animation (P8) — **done**
 
@@ -1221,5 +1250,7 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Phase 11: forge-animate (easing, `Vec4` tracks, clips with `Name`-bound channels, `Animator` with loop modes, crossfade and markers, tweens; 19 tests)
 - [x] Light: forge-render `Light` resource (`set_light` command, `plan_light`, per-fragment lighting in forge-webgl, `material_unlit`), shadow box (`light_view_projection`, texel-snapped) and `plan_casters`; forge-webgl shadow map (lazy depth texture + framebuffer + depth program, depth pass with polygon offset, 3x3 PCF on unit 1, falls back to lit-only)
 - [x] Mo Venture v2: mid-air jump, reliable taps, gem fix, movers, juice, sun and shadows, campaign of four levels, on-screen touch controls
+- [x] Mo Venture v3: Xiaozhu and Xiaomao as companions (swap control), climb, spin and slam abilities, crates/switches/gates, Vine Wall and Brick Yard, the page as an Oak program
+- [ ] Mo Venture v4: two players over a WebSocket (needs the monad pin at or past `5d54cd68`)
 - [ ] Phase 12: forge-physics (rigid bodies, sequential-impulse solver over a generic `Constraint` class, joints, sleeping, render interpolation, deterministic step, character controller)
 - [x] Web input: `forge_app::input` (`Input` resource, `app_frame_input`) + keyboard/pointer/wheel listeners in `forge_app::web`; demo WASD movement; browser run setup (`scripts/web-serve.sh`, `web/`, README.md)

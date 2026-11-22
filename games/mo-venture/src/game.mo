@@ -33,16 +33,23 @@ use forge_app {
     CameraRig, Orbit, orbit_new, orbit_rig, orbit_with_limits, world_orbit_opt, app_add_orbit_camera,
     world_orbit_follow, world_input, app_initial_world, Input, input_key_pressed, hud_set
 }
-use lib::level {Level, skyway, level_name, level_start}
+use lib::level {Level, skyway, level_name, level_start, level_kill_y}
 use lib::levels {all_levels}
+use lib::hero {hero_xiaozhu, hero_next, hero_name}
 use lib::look {
-    Looks, Loaded, load, level_world, spawn_level_as, clear_level, Spin, spin_name, sun_name, hero_xiaozhu, hero_next,
-    hero_name, redress_mo
+    Looks, Loaded, load, level_world, spawn_level_as, clear_level, Spin, spin_name, sun_name
 }
-use lib::mo {world_set_intent, find_mo, mo_position, entity_mo, mo_move, carriers_step}
-use lib::rules {rules_step, GameState, world_game_opt, game_falls, game_won, game_message_age, world_clear_game}
+use lib::mo {
+    world_set_intent, world_intent, find_mo, find_companion, mo_position, entity_mo, mo_move, carriers_step,
+    mo_swap, mo_hero, mo_facing, world_set_follow_intent, intent_swapped, Intent, MoState
+}
+use lib::rules {
+    rules_step, GameState, world_game_opt, game_falls, game_won, game_message_age, world_clear_game
+}
 use lib::bot {Bot, Thought, world_bot, world_set_bot, bot_think, bot_toggle, bot_on, bot_is_on, bot_resync, bot_restart}
 use lib::controls {keys_intent, autopilot_pressed}
+use lib::companion {follow_intent, leash_step}
+use lib::tune {tune}
 
 // ── Campaign ────────────────────────────────────────────────────────
 
@@ -89,11 +96,16 @@ pub def campaign_count (c : Campaign) : I64 := List.length c.levels
 
 pub def campaign_hero (c : Campaign) : I64 := c.hero
 
-/// The hero Mo is (Xiaozhu without a campaign).
+/// The hero the player controls: Mo's own identity, else the campaign's
+/// memory (Xiaozhu without either).
 pub def world_hero (world : World) : I64 :=
-    match world_campaign_opt world {
-        Option.some c => campaign_hero c,
-        Option.none => hero_xiaozhu
+    match find_mo world {
+        Option.some e => mo_hero (entity_mo world e),
+        Option.none =>
+            match world_campaign_opt world {
+                Option.some c => campaign_hero c,
+                Option.none => hero_xiaozhu
+            }
     }
 
 def level_of (c : Campaign) (i : I64) : Level :=
@@ -124,14 +136,45 @@ def goto (world : World) (c : Campaign) (i : I64) : World :=
     let w2 : World := world_set_campaign w1 { levels := c.levels, index := i, looks := c.looks, hero := c.hero : Campaign } in
     world_set_bot w2 (bot_restart (world_bot w2))
 
-/// Mo becomes the other hero, in place: same spot, same run.
-def switch_hero (world : World) (c : Campaign) : World :=
-    let h : I64 := hero_next c.hero in
-    let w1 : World := world_set_campaign world { levels := c.levels, index := c.index, looks := c.looks, hero := h : Campaign } in
-    match find_mo w1 {
-        Option.some e => redress_mo c.looks h w1 e,
-        Option.none => w1
+/// Record `h` as the controlled hero (the HUD and level changes read it).
+def set_campaign_hero (world : World) (h : I64) : World :=
+    match world_campaign_opt world {
+        Option.some c0 =>
+            let c : Campaign := c0 in
+            world_set_campaign world { levels := c.levels, index := c.index, looks := c.looks, hero := h : Campaign },
+        Option.none => world
     }
+
+/// `C` swaps which Mo the player controls; either way, the other one
+/// follows. The companion's intent for this frame is computed here, from
+/// the player's post-swap position and facing.
+pub def control_step (world : World) : World :=
+    let i : Intent := world_intent world in
+    let w1 : World := if intent_swapped i then mo_swap world else world in
+    let w2 : World :=
+        match find_mo w1 {
+            Option.some p => set_campaign_hero w1 (mo_hero (entity_mo w1 p)),
+            Option.none => w1
+        } in
+    match find_mo w2 {
+        Option.some p0 =>
+            let p : Entity := p0 in
+            match find_companion w2 {
+                Option.none => w2,
+                Option.some c0 =>
+                    let c : Entity := c0 in
+                    let ps : MoState := entity_mo w2 p in
+                    let cs : MoState := entity_mo w2 c in
+                    world_set_follow_intent w2
+                        (follow_intent tune (mo_hero cs) (collision_scene w2) cs
+                            (mo_position w2 c) (mo_position w2 p) (mo_facing ps))
+            },
+        Option.none => w2
+    }
+
+/// Bring a stranded companion back to the player's side.
+pub def companion_now (world : World) : World :=
+    leash_step tune (level_kill_y (world_level world)) world
 
 def key_level (world : World) : I64 :=
     let i : Input := world_input world in
@@ -139,6 +182,8 @@ def key_level (world : World) : I64 :=
     else if input_key_pressed i "Digit2" then 1
     else if input_key_pressed i "Digit3" then 2
     else if input_key_pressed i "Digit4" then 3
+    else if input_key_pressed i "Digit5" then 4
+    else if input_key_pressed i "Digit6" then 5
     else 0 - 1
 
 def won_for (world : World) : F64 :=
@@ -155,7 +200,6 @@ def campaign_with (world : World) (c : Campaign) : World :=
     let bot : Bool := bot_is_on (world_bot world) in
     if k >= 0 && k < campaign_count c then goto world c k
     else if input_key_pressed (world_input world) "Backspace" then goto world c c.index
-    else if input_key_pressed (world_input world) "KeyC" then switch_hero world c
     else if age >= 0.0 && next_ok && (enter || (bot && age > 2.5)) then goto world c (c.index + 1)
     else world
 
@@ -174,7 +218,7 @@ pub def banner_step (world : World) : World :=
             let c : Campaign := c0 in
             let n : I64 := campaign_count c in
             let w1 : World := hud_set world "level" (String.concat (I64.to_string (c.index + 1)) (String.concat "/" (I64.to_string n))) in
-            let w1h : World := hud_set w1 "hero" (hero_name c.hero) in
+            let w1h : World := hud_set w1 "hero" (hero_name (world_hero w1)) in
             let w2 : World := hud_set w1h "level-name" (level_name (level_of c c.index)) in
             if won_for w2 >= 0.0
             then hud_set w2 "message" (if c.index + 1 < n then "Goal! Enter: next level" else "Goal! Every level done")
@@ -302,11 +346,13 @@ pub def mo_venture_levels (levels : List Level) : App :=
     } in
     let a0 : App := app_add_system app_new "mo.campaign" update_s (WorldM.modify campaign_step) in
     let a1 : App := app_add_system a0 "mo.intent" update_s (WorldM.modify intent_step) in
-    let a2 : App := app_add_orbit_camera a1 (camera_at first) in
+    let a1c : App := app_add_system a1 "mo.control" update_s (WorldM.modify control_step) in
+    let a2 : App := app_add_orbit_camera a1c (camera_at first) in
     let a3 : App := app_add_system a2 "mo.animate" update_s (WorldM.modify animate_level) in
     let a4 : App := app_add_system a3 "mo.move" update_s (WorldM.modify mo_move) in
     let a5 : App := app_add_system a4 "mo.rules" update_s (WorldM.modify rules_now) in
-    let a6 : App := app_add_system a5 "mo.banner" update_s (WorldM.modify banner_step) in
+    let a5c : App := app_add_system a5 "mo.companion" update_s (WorldM.modify companion_now) in
+    let a6 : App := app_add_system a5c "mo.banner" update_s (WorldM.modify banner_step) in
     let a7 : App := app_add_system a6 "mo.tween" update_s (WorldM.modify tween_step) in
     let a8 : App := app_add_system a7 "mo.spin" update_s (WorldM.modify spin_step) in
     let a9 : App := app_add_system a8 "mo.camera" update_s (WorldM.modify follow) in

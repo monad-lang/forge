@@ -50,6 +50,23 @@ path = "motes/forge-webgl"
 # checkout's copies. That is why the web code below lives behind a
 # `targets = ["web"]` bin: nothing on the native path reaches this
 # dependency, and a native `monad check`/`test` never sees a second `init`.
+# Oak: typed HTML views (the UI), its component set, and the browser runtime
+# that renders them. Same monad repository and pin as `web_wasm`.
+[workspace.dependencies.oak]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/oak"
+
+[workspace.dependencies.oak_ui]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/oak_ui"
+
+[workspace.dependencies.oak_wasm]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/oak_wasm"
+
 [workspace.dependencies.web_wasm]
 git = "https://github.com/monad-lang/monad.git"
 # Keep current: `monad update` (README.md, "Keeping the monad pin current").

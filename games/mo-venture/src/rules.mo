@@ -12,15 +12,24 @@ use init::id {Id}
 use forge_core::ecs {World, Entity, Spawned, spawn, despawn, insert_component, remove_component, get_component_named}
 use forge_core::query {query_entities}
 use forge_core::world_m {WorldM, WorldM.modify}
-use forge_math {Vec3, vec3, f64_abs}
+use forge_math {Vec3, vec3, v3_scale, f64_abs, f64_max}
 use forge_schedule {world_time, time_delta}
 use forge_render {set_mesh}
-use forge_collide {Pose, pose_at, collision_scene, overlap, layer_all, collider_name}
+use forge_collide {
+    Scene, Pose, pose_at, collision_scene, overlap, layer_all, collider_name, shape_sphere
+}
 use forge_animate {Easing, TweenEnd, set_tween, tween_scale, tween_then}
 use forge_app {hud_set}
-use lib::level {Level}
-use lib::look {Post, post_name, spark_name, goal_name}
-use lib::mo {find_mo, mo_position, place_mo, set_mo, mo_rest, mo_shape, mo_facing, entity_mo}
+use lib::level {Level, Switch, Gate, switch_gate, gate_pos, gate_half, gate_id}
+use lib::look {
+    Post, post_name, spark_name, goal_name, box_name, switch_name, gate_name, box_half
+}
+use lib::mo {
+    MoState, find_mo, mo_position, place_mo, set_mo, mo_rest_for, mo_shape, mo_facing, entity_mo,
+    mo_ability, mo_ability_age, mo_grounded, mo_hero, mo_with_ability
+}
+use lib::hero {ability_none, ability_spin, ability_slam}
+use lib::tune {Tune, tune}
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -177,12 +186,89 @@ def touch_all (p : Play) (es : List Entity) : Play :=
         List.cons e rest => touch_all (touch p e) rest
     }
 
-/// Below the level: back to the respawn point, at rest.
+// ── Abilities: slam, spin, boxes, gates ─────────────────────────────
+
+/// The scale a box or gate is drawn at.
+def gate_scale (g : Gate) : Vec3 := v3_scale (gate_half g) 2.0
+
+/// A broken box pops like a spark (it shrinks away and is despawned).
+def break_box (world : World) (e : Entity) : World :=
+    let w1 : World := remove_component (remove_component world e box_name) e collider_name in
+    set_tween w1 e (tween_then (tween_scale (v3_scale box_half 2.0) (vec3 0.05 0.05 0.05) 0.18 Easing.quad_out)
+                                   TweenEnd.end_despawn)
+
+/// An opened gate sinks away the same way.
+def open_gate (world : World) (e : Entity) (g : Gate) : World :=
+    let w1 : World := remove_component (remove_component world e gate_name) e collider_name in
+    set_tween w1 e (tween_then (tween_scale (gate_scale g) (vec3 0.02 0.02 0.02) 0.3 Easing.quad_in)
+                                  TweenEnd.end_despawn)
+
+#[terminating]
+def break_boxes (world : World) (es : List Entity) : World :=
+    match es {
+        List.empty => world,
+        List.cons e rest =>
+            if has_named world e box_name then break_boxes (break_box world e) rest
+            else break_boxes world rest
+    }
+
+#[terminating]
+def open_matching (world : World) (id : I64) (es : List Entity) : World :=
+    match es {
+        List.empty => world,
+        List.cons e rest =>
+            match get_component_named world e gate_name {
+                Option.some v0 =>
+                    let g : Gate := match v0 { Any.any x => let g0 : Gate := x in g0 } in
+                    if gate_id g == id then open_matching (open_gate world e g) id rest
+                    else open_matching world id rest,
+                Option.none => open_matching world id rest
+            }
+    }
+
+/// Every switch the spin is touching opens its gates.
+#[terminating]
+def trip_switches (world : World) (es : List Entity) : World :=
+    match es {
+        List.empty => world,
+        List.cons e rest =>
+            match get_component_named world e switch_name {
+                Option.some v0 =>
+                    let sw : Switch := match v0 { Any.any x => let s0 : Switch := x in s0 } in
+                    let w1 : World := open_matching world (switch_gate sw) (query_entities world [gate_name] []) in
+                    trip_switches w1 rest,
+                Option.none => trip_switches world rest
+            }
+    }
+
+/// The controlled Mo's ability, applied to the world. A slam landing
+/// breaks the boxes around the feet; a spin trips the switches in reach.
+/// (The companion never uses abilities; the AI does not press X.)
+def abilities (t : Tune) (sc : Scene) (world : World) (mo : Entity) (pos : Vec3) : World :=
+    let s : MoState := entity_mo world mo in
+    let a : I64 := mo_ability s in
+    if a == ability_slam && mo_grounded s
+    then
+        let hits : List Entity := overlap sc (shape_sphere t.slam_radius) (pose_at pos) layer_all (Option.some mo) in
+        let w1 : World := break_boxes world hits in
+        set_mo w1 mo (mo_with_ability (entity_mo w1 mo) ability_none 0.0)
+    else if a == ability_spin && mo_ability_age s <= t.spin_time
+    then
+        let hits : List Entity := overlap sc (shape_sphere t.spin_radius) (pose_at pos) layer_all (Option.some mo) in
+        trip_switches world hits
+    else world
+
+/// Below the level: back to the respawn point, at rest, as the same hero.
 def fall_check (p : Play) (mo : Entity) (pos : Vec3) : Play :=
     if pos.y < p.game.kill_y
-    then { world := set_mo (place_mo p.world mo p.game.respawn (mo_facing (entity_mo p.world mo))) mo mo_rest,
-           game := with_fall p.game : Play }
+    then
+        let s : MoState := entity_mo p.world mo in
+        { world := set_mo (place_mo p.world mo p.game.respawn (mo_facing s)) mo (mo_rest_for (mo_hero s)),
+          game := with_fall p.game : Play }
     else p
+
+/// The level's kill height (the companion's leash reads it).
+pub def game_kill_y (g : GameState) : F64 := g.kill_y
 
 // ── HUD ─────────────────────────────────────────────────────────────
 
@@ -223,9 +309,11 @@ def show (world : World) (g : GameState) (pos : Vec3) : World :=
 
 def rules_for (world : World) (g0 : GameState) (mo : Entity) : World :=
     let pos : Vec3 := mo_position world mo in
-    let touched : List Entity := overlap (collision_scene world) mo_shape (pose_at pos) layer_all (Option.some mo) in
+    let sc : Scene := collision_scene world in
+    let touched : List Entity := overlap sc mo_shape (pose_at pos) layer_all (Option.some mo) in
     let p1 : Play := touch_all { world := world, game := tick g0 (time_delta (world_time world)) : Play } touched in
-    let p2 : Play := fall_check p1 mo pos in
+    let w1 : World := abilities tune sc p1.world mo pos in
+    let p2 : Play := fall_check { world := w1, game := p1.game : Play } mo pos in
     show (world_set_game p2.world p2.game) p2.game (mo_position p2.world mo)
 
 /// One frame of rules for level `lv` (its state is created on first use).

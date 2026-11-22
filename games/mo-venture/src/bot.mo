@@ -19,11 +19,15 @@ use std::derive {}
 use init::copy {Copy}
 use forge_core::ecs {World, Spawned, spawn, insert_component, get_component_named}
 use forge_core::query {query_entities}
-use forge_math {Vec3, vec3, v3_add, v3_sub, v3_dot, v3_length, v3_scale, ray, f64_sqrt, f64_max, f64_min}
-use forge_collide {Scene, raycast, layer_all}
+use forge_math {Vec3, vec3, v3_add, v3_sub, v3_dot, v3_length, v3_scale, ray, f64_sqrt, f64_max, f64_min, f64_abs}
+use forge_collide {Scene, Hit, raycast, hit_normal, layer_all}
 use lib::tune {Tune, tune, mo_stand}
-use lib::level {Level, Way, act_walk, act_dash, act_double, act_double_dash, act_wait, act_ride}
-use lib::mo {Intent, intent, intent_none, MoState}
+use lib::level {
+    Level, Way, act_walk, act_dash, act_double, act_double_dash, act_wait, act_ride,
+    act_ability, act_slam, act_spin, act_climb, act_as_kitty, act_as_piggy
+}
+use lib::mo {Intent, intent, intent_ext, intent_none, MoState, mo_hero}
+use lib::hero {hero_xiaozhu, hero_xiaomao}
 
 /// Where the bot is on the route. `Copy`.
 #[derive Copy Clone]
@@ -78,14 +82,14 @@ def prev_point (lv : Level) (i : I64) : Vec3 :=
     }
 
 /// Unit direction from `pos` toward `p` on the ground plane (zero when on it).
-def toward (pos : Vec3) (p : Vec3) : Vec3 :=
+pub def toward (pos : Vec3) (p : Vec3) : Vec3 :=
     let d : Vec3 := flat (v3_sub p pos) in
     let len : F64 := v3_length d in
     if len < 0.0001 then vec3 0.0 0.0 0.0 else v3_scale d (1.0 / len)
 
 /// Is there ground under the point `ahead` units in front of Mo (feet at
 /// `feet`)? A ray from just above the feet, down by most of a step.
-def ground_ahead (sc : Scene) (pos : Vec3) (dir : Vec3) (feet : F64) : Bool :=
+pub def ground_ahead (sc : Scene) (pos : Vec3) (dir : Vec3) (feet : F64) : Bool :=
     let probe : Vec3 := v3_add pos (v3_scale dir 0.6) in
     match raycast sc (ray (vec3 probe.x (feet + 0.3) probe.z) (vec3 0.0 (0.0 - 1.0) 0.0)) 0.9 layer_all {
         Option.some _ => true,
@@ -94,10 +98,22 @@ def ground_ahead (sc : Scene) (pos : Vec3) (dir : Vec3) (feet : F64) : Bool :=
 
 /// Is there ground just under the platform-top point `p`? (A moving
 /// platform is at this end of its path.)
-def ground_at (sc : Scene) (p : Vec3) : Bool :=
+pub def ground_at (sc : Scene) (p : Vec3) : Bool :=
     match raycast sc (ray (vec3 p.x (p.y + 0.5) p.z) (vec3 0.0 (0.0 - 1.0) 0.0)) 1.0 layer_all {
         Option.some _ => true,
         Option.none => false
+    }
+
+/// Is a wall within reach ahead of Mo (chest at `feet + 1.0`)? What the
+/// slam route action jumps into.
+pub def wall_ahead (sc : Scene) (pos : Vec3) (dir : Vec3) (feet : F64) : Bool :=
+    let chest : Vec3 := vec3 pos.x (feet + 1.0) pos.z in
+    match raycast sc (ray chest dir) 1.4 layer_all {
+        Option.none => false,
+        Option.some h0 =>
+            let h : Hit := h0 in
+            let n : Vec3 := hit_normal h in
+            f64_abs n.y < 0.5
     }
 
 /// The fraction of run speed that covers `gap` before Mo, rising at `vy`
@@ -110,10 +126,22 @@ def aim (t : Tune) (vy : F64) (above : F64) (gap : F64) : F64 :=
 
 def think_at (lv : Level) (sc : Scene) (b : Bot) (s : MoState) (pos : Vec3) (w : Way) : Thought :=
     let feet : F64 := pos.y - mo_stand in
+    let hero : I64 := mo_hero s in
     let to : Vec3 := flat (v3_sub w.at pos) in
     let seg : Vec3 := flat (v3_sub w.at (prev_point lv b.index)) in
     let near_or_past : Bool := v3_length to < arrive || v3_dot to seg <= 0.0 in
-    let landed : Bool := s.grounded && feet > w.at.y - 0.3 && near_or_past in
+    // The ability / swap route actions.
+    let want_kitty : Bool := w.act == act_as_kitty && hero != hero_xiaomao in
+    let want_piggy : Bool := w.act == act_as_piggy && hero != hero_xiaozhu in
+    let swap : Bool := want_kitty || want_piggy in
+    let climb_spot : Bool := w.act == act_climb in
+    let slammed : Bool := s.grounded && feet > w.at.y - 0.3 && near_or_past in
+    let landed : Bool :=
+        if swap then false
+        else if climb_spot then feet > w.at.y - 0.4 && near_or_past
+        else if w.act == act_slam then slammed
+        else if w.act == act_spin || w.act == act_ability then near_or_past
+        else s.grounded && feet > w.at.y - 0.3 && near_or_past in
     let next : I64 := if landed then b.index + 1 else b.index in
     let target : Vec3 := match point_at lv next {
         Option.some p => p,
@@ -128,8 +156,12 @@ def think_at (lv : Level) (sc : Scene) (b : Bot) (s : MoState) (pos : Vec3) (w :
         Option.none => act_walk
     } in
     // Movers: stand while the platform is away (wait) or carrying Mo (ride).
-    let hold : Bool := act == act_ride || (act == act_wait && s.grounded && Bool.not (ground_at sc target)) in
-    let jump : Bool := Bool.not hold && s.grounded && (edge || step_up) in
+    let hold : Bool := (act == act_ride || (act == act_wait && s.grounded && Bool.not (ground_at sc target)))
+                       || swap in
+    // The slam action: jump into the wall ahead, then slam down on the way.
+    let blocked : Bool := moving && wall_ahead sc pos dir feet in
+    let slam_spot : Bool := w.act == act_slam in
+    let jump : Bool := Bool.not hold && s.grounded && (edge || step_up || (slam_spot && blocked)) in
     let air_spot : Bool := act == act_double || act == act_double_dash in
     let dash_spot : Bool := act == act_dash || act == act_double_dash in
     let air_jump : Bool := air_spot && Bool.not s.grounded && s.vel.y <= 0.0 && s.air_used == 0 in
@@ -143,8 +175,12 @@ def think_at (lv : Level) (sc : Scene) (b : Bot) (s : MoState) (pos : Vec3) (w :
     let gap : F64 := v3_length (flat (v3_sub target pos)) in
     let full : Bool := s.grounded || dash_spot || (air_spot && s.air_used == 0) in
     let mag : F64 := if full then 1.0 else aim tune s.vel.y (pos.y - (target.y + mo_stand)) gap in
+    let spin_spot : Bool := w.act == act_spin || w.act == act_ability in
+    let ability : Bool :=
+        (spin_spot && s.grounded && near_or_past)
+        || (slam_spot && Bool.not s.grounded && s.vel.y <= 0.5 && blocked) in
     let m : Vec3 := if done || hold then vec3 0.0 0.0 0.0 else v3_scale dir mag in
-    { intent := intent m.x m.z (jump || air_jump) true dash false,
+    { intent := intent_ext (intent m.x m.z (jump || air_jump) true dash false) ability swap,
       bot := { on := true, index := next, dash_pending := false, falls := b.falls : Bot }
       : Thought }
 

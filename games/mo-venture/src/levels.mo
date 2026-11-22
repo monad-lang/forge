@@ -14,8 +14,11 @@
 
 use forge_math {Vec3, vec3}
 use lib::level {
-    Level, level_new, Plat, plat, mover, Way, way, n, kind_grass, kind_stone, kind_wood, kind_gold,
-    act_walk, act_jump, act_dash, act_double, act_double_dash, act_wait, act_ride, skyway
+    Level, level_new, level_puzzles, Plat, plat, mover, Way, way, n,
+    kind_grass, kind_stone, kind_wood, kind_gold, kind_climb,
+    switch_at, gate_box,
+    act_walk, act_jump, act_dash, act_double, act_double_dash, act_wait, act_ride,
+    act_ability, act_slam, act_spin, act_climb, act_as_kitty, act_as_piggy, skyway
 }
 
 // ── Cloud Steps ─────────────────────────────────────────────────────
@@ -115,5 +118,65 @@ pub def sun_spire : Level :=
 
 // ── The campaign ────────────────────────────────────────────────────
 
+// ── Vine Wall ───────────────────────────────────────────────────────
+
+/// Xiaomao's climb. The start island ends at a five-unit wall whose front
+/// face is flush with it: no jump reaches the top (1.62 units of jump,
+/// 2.9 with the air jump), and only a kitty climbs it. The wall's own top
+/// is the ledge, with the goal at its far end.
+def vine_plats : List Plat :=
+    [ plat 0.0 (n 0.5) 0.0 3.0 0.5 3.0 kind_grass ]          // start island, z -3..3
+
+/// The wall: 5 tall, front at z = -3, top at 5.0, z -8..-3.
+def vine_climbs : List Plat :=
+    [ plat 0.0 2.5 (n 5.5) 2.5 2.5 2.5 kind_climb ]
+
+def vine_sparks : List Vec3 :=
+    [ vec3 0.0 0.7 (n 0.5), vec3 0.0 2.2 (n 2.4), vec3 0.0 4.2 (n 2.4),
+      vec3 0.0 5.7 (n 5.5), vec3 0.0 5.7 (n 7.0) ]
+
+def vine_route : List Way :=
+    [ way 0.0 0.0 (n 1.0) act_as_kitty,
+      way 0.0 5.0 (n 5.5) act_climb,
+      way 0.0 5.0 (n 7.0) act_walk ]
+
+pub def vine_wall : Level :=
+    level_puzzles
+        (level_new "Vine Wall" vine_plats vine_sparks [vec3 0.0 0.0 (n 1.0), vec3 0.0 5.0 (n 5.5)]
+                   (vec3 0.0 5.0 (n 7.0)) (vec3 0.0 0.0 1.5) (n 8.0) vine_route)
+        vine_climbs List.empty List.empty List.empty
+
+// ── Brick Yard ──────────────────────────────────────────────────────
+
+/// Xiaozhu's slam and Xiaomao's spin. A wall of three crates (2.4 tall,
+/// higher than any jump) blocks the corridor; behind them a switch opens
+/// the gate before the goal. Break the crates as the piggy, swap to the
+/// kitty, spin the switch.
+def brick_plats : List Plat :=
+    [ plat 0.0 (n 0.5) 0.0 3.0 0.5 3.0 kind_grass,           // start island, z -3..3
+      plat 0.0 (n 0.5) (n 8.0) 3.0 0.5 4.0 kind_grass ]      // corridor, z -12..-4
+
+/// Ground points of the crate wall (each box is 1.4 x 2.4 x 1.2).
+def brick_boxes : List Vec3 :=
+    [ vec3 (n 1.2) 0.0 (n 4.0), vec3 0.0 0.0 (n 4.0), vec3 1.2 0.0 (n 4.0) ]
+
+def brick_sparks : List Vec3 :=
+    [ vec3 0.0 0.7 (n 0.5), vec3 0.0 0.7 (n 5.2), vec3 0.0 0.7 (n 9.0), vec3 0.0 0.7 (n 10.5) ]
+
+def brick_route : List Way :=
+    [ way 0.0 0.0 (n 1.0) act_as_piggy,
+      way 0.0 0.0 (n 5.0) act_slam,
+      way 0.0 0.0 (n 6.0) act_as_kitty,
+      way 0.0 0.0 (n 6.0) act_spin,
+      way 0.0 0.0 (n 11.0) act_walk ]
+
+pub def brick_yard : Level :=
+    level_puzzles
+        (level_new "Brick Yard" brick_plats brick_sparks [vec3 0.0 0.0 (n 1.0), vec3 0.0 0.0 (n 5.0)]
+                   (vec3 0.0 0.0 (n 11.0)) (vec3 0.0 0.0 1.5) (n 8.0) brick_route)
+        List.empty brick_boxes [switch_at 0.0 0.0 (n 6.0) 1] [gate_box 0.0 2.0 (n 7.0) 1.5 2.0 0.3 1]
+
+// ── The campaign ────────────────────────────────────────────────────
+
 /// The levels in order.
-pub def all_levels : List Level := [skyway, cloud_steps, drift_docks, sun_spire]
+pub def all_levels : List Level := [skyway, cloud_steps, drift_docks, sun_spire, vine_wall, brick_yard]

@@ -23,7 +23,17 @@ pub struct Tune {
     turn_rate : F64,
     min_hop : F64,
     air_jumps : I64,
-    air_jump_speed : F64
+    air_jump_speed : F64,
+    climb_speed : F64,
+    slam_speed : F64,
+    slam_timeout : F64,
+    slam_radius : F64,
+    spin_time : F64,
+    spin_radius : F64,
+    leash_distance : F64,
+    leash_height : F64,
+    follow_behind : F64,
+    follow_sprint : F64
 }
 
 /// The game's tuning:
@@ -41,7 +51,10 @@ pub def tune : Tune :=
     { gravity := 25.0, jump_speed := 9.0, jump_cut := 0.5, run_speed := 7.0, sprint_speed := 10.0,
       ground_accel := 30.0, ground_friction := 40.0, air_accel := 12.0,
       coyote := 0.1, buffer := 0.12, dash_speed := 13.0, dash_lift := 3.0, max_fall := 20.0,
-      turn_rate := 12.0, min_hop := 0.12, air_jumps := 1, air_jump_speed := 8.0
+      turn_rate := 12.0, min_hop := 0.12, air_jumps := 1, air_jump_speed := 8.0,
+      climb_speed := 3.2, slam_speed := 24.0, slam_timeout := 3.0, slam_radius := 1.6,
+      spin_time := 0.45, spin_radius := 1.5,
+      leash_distance := 12.0, leash_height := 3.0, follow_behind := 1.6, follow_sprint := 4.0
       : Tune }
 
 /// Mo's collider: a capsule of radius 0.35 around a 0.7 segment, so 1.4

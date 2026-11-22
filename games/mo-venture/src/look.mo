@@ -25,10 +25,20 @@ use forge_render {
     mesh_cube, mesh_sphere, mesh_cylinder, material_flat, material_unlit, MeshHandle, MaterialHandle, MeshComponent,
     mesh_component, set_mesh
 }
-use forge_collide {collider, collider_trigger, shape_box, shape_sphere, set_collider}
-use lib::level {Level, Plat, plat_top, kind_grass, kind_stone, kind_wood, kind_gold, mover_dwell, mover_travel}
+use forge_collide {
+    collider, collider_trigger, collider_with_layers, layer_all, shape_box, shape_sphere, set_collider
+}
+use lib::level {
+    Level, Plat, Switch, Gate, plat_top, kind_grass, kind_stone, kind_wood, kind_gold, kind_climb,
+    mover_dwell, mover_travel, level_plats, level_climbs, level_boxes, level_switches, level_gates,
+    switch_pos, switch_gate, gate_pos, gate_half, gate_id
+}
 use lib::tune {mo_stand}
-use lib::mo {mo_rest, set_mo, mo_shape, yaw_quat, carrier_name, carrier_at, body_name}
+use lib::hero {hero_xiaozhu, hero_xiaomao, hero_next, hero_name}
+use lib::mo {
+    mo_rest_for, set_mo, mo_shape, mo_move_layers, yaw_quat, carrier_name, carrier_at, body_name,
+    player_name, companion_name, layer_world, layer_climb
+}
 
 // ── Assets ──────────────────────────────────────────────────────────
 
@@ -168,6 +178,7 @@ def plat_material (lk : Looks) (k : I64) : MaterialHandle :=
     if k == kind_stone then lk.stone
     else if k == kind_wood then lk.wood
     else if k == kind_gold then lk.gold
+    else if k == kind_climb then lk.green
     else lk.grass
 
 /// Rest at the centre, travel to `to`, rest there; played ping-pong, so
@@ -181,7 +192,11 @@ def mover_clip (p : Plat) : Clip :=
 
 def spawn_plat (lk : Looks) (w : World) (p : Plat) : World :=
     let e : Spawned := shown w p.center quat_identity (v3_scale p.half 2.0) lk.cube (plat_material lk p.kind) in
-    let w1 : World := set_collider e.world e.entity (collider (shape_box p.half)) in
+    let w1 : World :=
+        if p.kind == kind_climb
+        then set_collider e.world e.entity
+                 (collider_with_layers (collider (shape_box p.half)) (layer_world + layer_climb) layer_all)
+        else set_collider e.world e.entity (collider (shape_box p.half)) in
     if p.moves
     then insert_component (set_animator w1 e.entity (animator (mover_clip p) LoopMode.loop_ping_pong))
              e.entity carrier_name (Any.any (carrier_at p.center))
@@ -257,20 +272,8 @@ def spawn_goal (lk : Looks) (w : World) (p : Vec3) : World :=
     insert_component w2 trig.entity goal_name (Any.any { reached := false : Goal })
 
 // ── Mo: Xiaozhu (a piggy) or Xiaomao (a kitty) ──────────────────────
-
-/// Which Mo the player is: `hero_xiaozhu` (小猪, the piggy, the default)
-/// or `hero_xiaomao` (小猫, the kitty). Only the look differs; both share
-/// the capsule and the controller.
-pub def hero_xiaozhu : I64 := 0
-
-pub def hero_xiaomao : I64 := 1
-
-pub def hero_count : I64 := 2
-
-/// The other one.
-pub def hero_next (h : I64) : I64 := if h == hero_xiaozhu then hero_xiaomao else hero_xiaozhu
-
-pub def hero_name (h : I64) : String := if h == hero_xiaomao then "Xiaomao Mo" else "Xiaozhu Mo"
+//
+// Hero identity and ability constants are in `hero.mo`.
 
 def x_axis : Vec3 := vec3 1.0 0.0 0.0
 
@@ -332,11 +335,68 @@ pub def spawn_mo_as (lk : Looks) (h : I64) (w : World) (p : Vec3) : Spawned :=
     let face : Vec3 := vec3 0.0 0.0 (0.0 - 1.0) in
     let root : Spawned := spawn_transform w (transform_new (v3_add p (vec3 0.0 (mo_stand + 0.01) 0.0)) (yaw_quat face) (vec3 1.0 1.0 1.0)) in
     let e : Entity := root.entity in
-    let w1 : World := set_mo (set_collider root.world e (collider mo_shape)) e mo_rest in
+    let w1 : World := set_mo (set_collider root.world e (mo_move_layers mo_shape)) e (mo_rest_for h) in
     { world := dress_mo lk h w1 e, entity := e : Spawned }
 
 /// Xiaozhu Mo at `p`.
 pub def spawn_mo (lk : Looks) (w : World) (p : Vec3) : Spawned := spawn_mo_as lk hero_xiaozhu w p
+
+// ── Puzzle props ────────────────────────────────────────────────────
+
+/// A breakable box (Xiaozhu's slam). Marker component, `Copy`.
+pub def box_name : String := "mo.box"
+
+/// A spin-trip switch (Xiaomao). Carries a `Switch`.
+pub def switch_name : String := "mo.switch"
+
+/// A gate a switch opens. Carries a `Gate`.
+pub def gate_name : String := "mo.gate"
+
+/// A box's half extents: 1.4 wide, 2.4 tall, 1.2 deep -- too tall to jump.
+pub def box_half : Vec3 := vec3 0.7 1.2 0.6
+
+/// A crate at ground point `p`: a wooden cube with a solid collider.
+def spawn_box (lk : Looks) (w : World) (p : Vec3) : World :=
+    let centre : Vec3 := v3_add p (vec3 0.0 box_half.y 0.0) in
+    let e : Spawned := shown w centre quat_identity (v3_scale box_half 2.0) lk.cube lk.wood in
+    insert_component (set_collider e.world e.entity (collider (shape_box box_half))) e.entity box_name (Any.any true)
+
+#[terminating]
+def spawn_boxes (lk : Looks) (w : World) (ps : List Vec3) : World :=
+    match ps {
+        List.empty => w,
+        List.cons p rest => spawn_boxes lk (spawn_box lk w p) rest
+    }
+
+/// A switch at ground point `p`: a small pad with a glowing orb, and a
+/// trigger the spin reaches.
+def spawn_switch (lk : Looks) (w : World) (sw : Switch) : World :=
+    let p : Vec3 := switch_pos sw in
+    let pad : Spawned := shown w (v3_add p (vec3 0.0 0.1 0.0)) quat_identity (vec3 1.0 0.2 1.0) lk.cylinder lk.stone in
+    let orb : Spawned := shown pad.world (v3_add p (vec3 0.0 0.75 0.0)) quat_identity (vec3 0.45 0.45 0.45) lk.sphere lk.beacon in
+    let trig : Spawned := spawn_transform orb.world (transform_new (v3_add p (vec3 0.0 0.9 0.0)) quat_identity (vec3 1.0 1.0 1.0)) in
+    let w1 : World := set_collider trig.world trig.entity (collider_trigger (shape_sphere 1.0)) in
+    insert_component w1 trig.entity switch_name (Any.any sw)
+
+#[terminating]
+def spawn_switches (lk : Looks) (w : World) (sws : List Switch) : World :=
+    match sws {
+        List.empty => w,
+        List.cons sw rest => spawn_switches lk (spawn_switch lk w sw) rest
+    }
+
+/// A gate: a tall bar with a solid collider, tagged with its switch id.
+def spawn_gate (lk : Looks) (w : World) (g : Gate) : World :=
+    let e : Spawned := shown w (gate_pos g) quat_identity (v3_scale (gate_half g) 2.0) lk.cube lk.stone in
+    let w1 : World := set_collider e.world e.entity (collider (shape_box (gate_half g))) in
+    insert_component w1 e.entity gate_name (Any.any g)
+
+#[terminating]
+def spawn_gates (lk : Looks) (w : World) (gs : List Gate) : World :=
+    match gs {
+        List.empty => w,
+        List.cons g rest => spawn_gates lk (spawn_gate lk w g) rest
+    }
 
 /// The sun's disc, tagged so `game.mo` can keep it out along the light.
 pub def sun_name : String := "mo.sun"
@@ -348,11 +408,19 @@ def spawn_sun (lk : Looks) (w : World) : World :=
 /// A whole level spawned into `w`, with Mo (as hero `h`) at the start.
 pub def spawn_level_as (lk : Looks) (h : I64) (w : World) (lv : Level) : World :=
     let w1 : World := spawn_plats lk w lv.plats in
-    let w2 : World := spawn_sparks lk w1 lv.sparks in
-    let w3 : World := spawn_posts lk w2 lv.posts 1 in
-    let w4 : World := spawn_goal lk w3 lv.goal in
-    let mo : Spawned := spawn_mo_as lk h (spawn_sun lk w4) lv.start in
-    mo.world
+    let w2 : World := spawn_plats lk w1 lv.climbs in
+    let w3 : World := spawn_boxes lk w2 lv.boxes in
+    let w4 : World := spawn_switches lk w3 lv.switches in
+    let w5 : World := spawn_gates lk w4 lv.gates in
+    let w6 : World := spawn_sparks lk w5 lv.sparks in
+    let w7 : World := spawn_posts lk w6 lv.posts 1 in
+    let w8 : World := spawn_goal lk w7 lv.goal in
+    let w9 : World := spawn_sun lk w8 in
+    let player : Spawned := spawn_mo_as lk h w9 lv.start in
+    let wp : World := insert_component player.world player.entity player_name (Any.any true) in
+    let beside : Vec3 := v3_add lv.start (vec3 0.0 0.0 1.2) in
+    let friend : Spawned := spawn_mo_as lk (hero_next h) wp beside in
+    insert_component friend.world friend.entity companion_name (Any.any true)
 
 /// `spawn_level_as` with Xiaozhu.
 pub def spawn_level (lk : Looks) (w : World) (lv : Level) : World := spawn_level_as lk hero_xiaozhu w lv

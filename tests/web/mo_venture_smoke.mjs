@@ -4,8 +4,8 @@
 //
 //   node target/web/mo-venture/smoke/mo_venture_smoke.mjs target/web/mo-venture/app.wasm [webgl2|webgl1|webgl1-nodepth|none]
 //
-// It reads the game through its HUD (`data-hud-*` on the canvas: sparks,
-// time, falls, message, and Mo's position as "x y z"). Checks, in order:
+// It reads the game through the Oak-rendered HUD (`#hud-sparks`, `#hud-time`,
+// `#hud-falls`, `#hud-message` and the hidden `#hud-pos` "x y z"). Checks, in order:
 //   - mount and setup: two programs, three meshes; the HUD appears;
 //   - shadows: frame 1 builds the shadow map (depth texture, framebuffer,
 //     depth program); each frame then renders the casters depth-only into
@@ -89,12 +89,19 @@ function frame() {
   return gl.calls.slice(before);
 }
 function frames(n) { for (let i = 0; i < n; i++) frame(); }
-const hud = (k) => canvas.attrs['data-hud-' + k];
+const hud = (k) => {
+  const n = byId('hud-' + k);
+  return n ? n.textContent.trim() : undefined;
+};
+// The HUD lands in the model the batch after the frame that made it (the
+// frame effect returns a message), so give the first frames a moment.
+function settle(n) { frames(n); }
 const pos = () => (hud('pos') || '').split(' ').map(Number);
 
 // ── mount ──
 const f1 = frame();
 if (count(f1, 'drawElements') < 40) fail(`frame 1 drew ${count(f1, 'drawElements')} meshes, want the whole level`);
+settle(4);
 if (hud('sparks') !== '0/20') fail(`HUD sparks ${JSON.stringify(hud('sparks'))}, want "0/20"`);
 
 // ── shadows ──

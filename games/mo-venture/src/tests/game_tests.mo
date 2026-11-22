@@ -11,11 +11,18 @@ use lib::{
     mo_step, MoStep, step_state, step_pos, find_mo, mo_position,
     GameState, game_new, world_game_opt, game_sparks, game_total, game_falls, game_won, game_checkpoint,
     fmt1, fmt2, trunc_i64, mo_venture_on, mo_venture_autopilot, mo_venture_levels, world_hero, hero_xiaozhu,
-    hero_xiaomao, hero_name
+    hero_xiaomao, hero_name, hero_next, ability_none, ability_slam, ability_spin,
+    intent_ext, mo_hero, mo_ability, mo_with_ability, mo_rest_for, mo_airborne_for,
+    find_companion, level_world, level_puzzles, box_name, gate_name, switch_at, gate_box,
+    vine_wall, brick_yard, loaded_looks, load, rules_step, set_mo, entity_mo, place_mo,
+    layer_world, layer_climb
 }
-use forge_core::ecs {World, Entity, entity_new}
-use forge_math {Vec3, vec3, v3_zero, f64_abs, f64_sqrt}
-use forge_collide {Scene, scene_of, entry_new, collider, shape_box, pose_at}
+use forge_core::ecs {World, Entity, entity_new, entity_id}
+use forge_core::query {query_entities}
+use forge_math {Vec3, vec3, v3_zero, v3_sub, v3_length, f64_abs, f64_sqrt}
+use forge_collide {
+    Scene, scene_of, entry_new, collider, collider_with_layers, shape_box, pose_at, layer_all
+}
 use forge_app {
     App, Frame, app_frame_dt, frame_world, app_initial_world, hud_get, world_set_input, input_apply, input_empty,
     input_key_down
@@ -476,29 +483,274 @@ def mo_z (w : World) : F64 :=
         Option.none => 0.0 - 99.0
     }
 
-/// Mo starts as Xiaozhu the piggy (12 parts) and shows it on the HUD.
+/// Both heroes exist from the start: the player is Xiaozhu (12 parts), the
+/// companion Xiaomao (15), and the HUD names the controlled one.
 #[test]
-def test_mo_starts_as_xiaozhu : Bool :=
+def test_both_heroes_spawn : Bool :=
     let a : App := mo_venture_on tiny_level in
-    let r : Run := play a (app_initial_world a) 0 2 in
-    world_hero r.world == hero_xiaozhu && mo_parts r.world == 12 && is_text (hud_get r.world "hero") (hero_name hero_xiaozhu)
+    let w : World := app_initial_world a in
+    match find_mo w {
+        Option.some p0 =>
+            let p : Entity := p0 in
+            match find_companion w {
+                Option.some c0 =>
+                    let c : Entity := c0 in
+                    List.length (children_of w p) == 12 && List.length (children_of w c) == 15
+                    && mo_hero (entity_mo w p) == hero_xiaozhu
+                    && mo_hero (entity_mo w c) == hero_xiaomao,
+                Option.none => false
+            },
+        Option.none => false
+    }
 
-/// C turns Mo into Xiaomao the kitty (15 parts) in place, and back.
+/// C swaps control: the former companion is the player now, each keeps its
+/// own look (no reskin), and the HUD follows.
 #[test]
-def test_c_switches_between_piggy_and_kitty_in_place : Bool :=
+def test_c_swaps_control_without_reskin : Bool :=
     let a : App := mo_venture_on tiny_level in
-    let r : Run := play a (app_initial_world a) 0 30 in
-    let z0 : F64 := mo_z r.world in
-    let w1 : World := press_key a r.world "KeyC" in
-    let kitty : Bool := world_hero w1 == hero_xiaomao && mo_parts w1 == 15 && near 0.02 (mo_z w1) z0
-                        && is_text (hud_get w1 "hero") "Xiaomao Mo" in
-    let w2 : World := press_key a w1 "KeyC" in
-    kitty && world_hero w2 == hero_xiaozhu && mo_parts w2 == 12
+    let w0 : World := app_initial_world a in
+    match find_mo w0 {
+        Option.some p0 =>
+            match find_companion w0 {
+                Option.some c0 =>
+                    let w1 : World := press_key a w0 "KeyC" in
+                    match find_mo w1 {
+                        Option.some q0 =>
+                            let q : Entity := q0 in
+                            match find_companion w1 {
+                                Option.some r0 =>
+                                    let r : Entity := r0 in
+                                    entity_id q == entity_id c0 && entity_id r == entity_id p0
+                                    && List.length (children_of w1 q) == 15
+                                    && List.length (children_of w1 r) == 12
+                                    && world_hero w1 == hero_xiaomao
+                                    && is_text (hud_get w1 "hero") "Xiaomao Mo",
+                                Option.none => false
+                            },
+                        Option.none => false
+                    },
+                Option.none => false
+            },
+        Option.none => false
+    }
 
-/// The hero stays chosen across a level change.
+/// The controlled hero stays chosen across a level change.
 #[test]
 def test_the_hero_survives_a_level_change : Bool :=
     let a : App := mo_venture_levels [tiny_level, tiny_level] in
     let w1 : World := press_key a (app_initial_world a) "KeyC" in
     let w2 : World := press_key a w1 "Digit2" in
-    world_level_index w2 == 1 && world_hero w2 == hero_xiaomao && mo_parts w2 == 15
+    world_level_index w2 == 1 && world_hero w2 == hero_xiaomao
+    && (match find_mo w2 {
+        Option.some p => List.length (children_of w2 p) == 15,
+        Option.none => false
+    })
+
+// ── Climbing, slam, spin (the controller) ───────────────────────────
+
+/// A floor and a climbable wall 0.6 in front of Mo (its face at z = -0.6).
+def climb_scene : Scene :=
+    scene_of
+        [ entry_new (entity_new 1u64 0u64) (collider (shape_box (vec3 20.0 0.5 20.0)))
+              (pose_at (vec3 0.0 (0.0 - 0.5) 0.0)),
+          entry_new (entity_new 2u64 0u64)
+              (collider_with_layers (collider (shape_box (vec3 1.0 3.0 0.5)))
+                  (layer_world + layer_climb) layer_all)
+              (pose_at (vec3 0.0 2.0 (0.0 - 1.1))) ]
+
+#[terminating]
+def climb_run (_h : I64) (s : MoState) (p : Vec3) (n : I64) : MoStep :=
+    let i : Intent := intent 0.0 (0.0 - 1.0) false false false false in
+    let st : MoStep := mo_step tune climb_scene Option.none s p i dt in
+    if n <= 1 then st else climb_run _h (step_state st) (step_pos st) (n - 1)
+
+/// Xiaomao climbs the wall; Xiaozhu only bumps into it.
+#[test]
+def test_climb_only_for_xiaomao : Bool :=
+    let k : MoStep := climb_run hero_xiaomao (mo_rest_for hero_xiaomao) (vec3 0.0 (mo_stand + 0.01) 0.0) 40 in
+    let g : MoStep := climb_run hero_xiaozhu (mo_rest_for hero_xiaozhu) (vec3 0.0 (mo_stand + 0.01) 0.0) 40 in
+    let kp : Vec3 := step_pos k in
+    let gp : Vec3 := step_pos g in
+    kp.y > 1.5 && gp.y < 1.0
+
+/// The ability key: Xiaozhu slams downward in the air, Xiaomao spins.
+#[test]
+def test_slam_sends_the_piggy_down : Bool :=
+    let i : Intent := intent_ext (intent 0.0 0.0 false false false false) true false in
+    let s1 : MoState := mo_velocity tune (mo_airborne_for hero_xiaozhu) i dt in
+    let v : Vec3 := mo_vel s1 in
+    mo_ability s1 == ability_slam && v.y <= (0.0 - 20.0)
+
+#[test]
+def test_spin_starts_and_expires : Bool :=
+    let i : Intent := intent_ext (intent 0.0 0.0 false false false false) true false in
+    let s1 : MoState := mo_velocity tune (mo_airborne_for hero_xiaomao) i dt in
+    let started : Bool := mo_ability s1 == ability_spin in
+    let idle : Intent := intent_none in
+    let s2 : MoState := run_ability s1 idle 30 in
+    started && mo_ability s2 == ability_none
+
+#[terminating]
+def run_ability (s : MoState) (i : Intent) (n : I64) : MoState :=
+    if n <= 0 then s
+    else run_ability (mo_velocity tune s i dt) i (n - 1)
+
+/// A grounded piggy cannot slam; only the air starts one.
+#[test]
+def test_a_grounded_piggy_cannot_slam : Bool :=
+    let i : Intent := intent_ext (intent 0.0 0.0 false false false false) true false in
+    let s1 : MoState := mo_velocity tune (mo_rest_for hero_xiaozhu) i dt in
+    mo_ability s1 == ability_none
+
+// ── Puzzles: boxes and gates ────────────────────────────────────────
+
+def puzzle_world (lv : Level) : World := level_world (loaded_looks load) lv
+
+def box_level : Level :=
+    level_puzzles
+        (level_new "Boxes" [plat 0.0 (0.0 - 0.5) 0.0 3.0 0.5 3.0 kind_grass] [] []
+                   (vec3 0.0 0.0 8.0) (vec3 0.0 0.0 2.0) (0.0 - 8.0) [])
+        List.empty [vec3 0.0 0.0 (0.0 - 1.0)] List.empty List.empty
+
+def gate_level : Level :=
+    level_puzzles
+        (level_new "Gate" [plat 0.0 (0.0 - 0.5) 0.0 3.0 0.5 3.0 kind_grass] [] []
+                   (vec3 0.0 0.0 8.0) (vec3 0.0 0.0 2.0) (0.0 - 8.0) [])
+        List.empty List.empty [switch_at 0.0 0.0 (0.0 - 1.0) 1] [gate_box 0.0 2.0 (0.0 - 3.0) 1.5 2.0 0.3 1]
+
+def slam_state (h : I64) : MoState := mo_with_ability (mo_rest_for h) ability_slam 0.0
+
+/// A slam landing breaks the crate next to Mo.
+#[test]
+def test_slam_breaks_a_box : Bool :=
+    let w0 : World := puzzle_world box_level in
+    match find_mo w0 {
+        Option.some p =>
+            let w1 : World := set_mo w0 p (slam_state hero_xiaozhu) in
+            let w2 : World := rules_step box_level w1 in
+            List.length (query_entities w2 [box_name] []) == 0,
+        Option.none => false
+    }
+
+/// The crate stays intact without a slam.
+#[test]
+def test_a_box_needs_the_slam : Bool :=
+    let w0 : World := puzzle_world box_level in
+    let w2 : World := rules_step box_level w0 in
+    List.length (query_entities w2 [box_name] []) == 1
+
+/// A spin next to the switch opens its gate.
+#[test]
+def test_spin_opens_the_gate : Bool :=
+    let w0 : World := puzzle_world gate_level in
+    match find_mo w0 {
+        Option.some p =>
+            let st : MoState := mo_with_ability (mo_rest_for hero_xiaomao) ability_spin 0.0 in
+            let w1 : World := set_mo w0 p st in
+            let w2 : World := rules_step gate_level w1 in
+            List.length (query_entities w2 [gate_name] []) == 0,
+        Option.none => false
+    }
+
+/// Without the spin the gate stays shut.
+#[test]
+def test_a_switch_needs_the_spin : Bool :=
+    let w0 : World := puzzle_world gate_level in
+    let w2 : World := rules_step gate_level w0 in
+    List.length (query_entities w2 [gate_name] []) == 1
+
+// ── The companion ───────────────────────────────────────────────────
+
+def distance_flat (a : Vec3) (b : Vec3) : F64 := v3_length (v3_sub a b)
+
+def pair_positions (w : World) : Option (Pair Vec3 Vec3) :=
+    match find_mo w {
+        Option.some p =>
+            match find_companion w {
+                Option.some c => Option.some (Pair.pair (mo_position w p) (mo_position w c)),
+                Option.none => Option.none
+            },
+        Option.none => Option.none
+    }
+
+/// The companion stays near the player while the player stands still.
+#[test]
+def test_the_companion_follows : Bool :=
+    let a : App := mo_venture_on tiny_level in
+    let r : Run := play a (app_initial_world a) 0 120 in
+    match pair_positions r.world {
+        Option.some ps =>
+            match ps { Pair.pair pp0 cp0 =>
+                let pp : Vec3 := pp0 in
+                let cp : Vec3 := cp0 in
+                let d : Vec3 := vec3 (cp.x - pp.x) 0.0 (cp.z - pp.z) in
+                v3_length d < 3.0 },
+        Option.none => false
+    }
+
+/// A companion left far away is leashed back to the player's side.
+#[test]
+def test_the_companion_leashes : Bool :=
+    let a : App := mo_venture_on tiny_level in
+    let w0 : World := app_initial_world a in
+    match find_companion w0 {
+        Option.some c =>
+            let w1 : World := place_mo w0 c (vec3 0.0 1.0 40.0) (vec3 0.0 0.0 (0.0 - 1.0)) in
+            let r : Run := play a w1 0 2 in
+            match pair_positions r.world {
+                Option.some ps =>
+                    match ps { Pair.pair pp0 cp0 =>
+                        let pp : Vec3 := pp0 in
+                        let cp : Vec3 := cp0 in
+                        let d : Vec3 := vec3 (cp.x - pp.x) 0.0 (cp.z - pp.z) in
+                        v3_length d < 4.0 },
+                Option.none => false
+            },
+        Option.none => false
+    }
+
+/// Only the controlled character collects: the companion on a spark leaves
+/// the count alone (rules read the player).
+#[test]
+def test_only_the_player_collects : Bool :=
+    let a : App := mo_venture_on tiny_level in
+    let w0 : World := app_initial_world a in
+    match find_companion w0 {
+        Option.some c =>
+            let w1 : World := place_mo w0 c (vec3 0.0 0.7 (0.0 - 5.5)) (vec3 0.0 0.0 (0.0 - 1.0)) in
+            let r : Run := play a w1 0 3 in
+            let g : GameState := game_of r.world in
+            game_sparks g == 0,
+        Option.none => false
+    }
+
+// ── The new puzzle levels ───────────────────────────────────────────
+
+#[test]
+def test_bot_finishes_vine_wall : Bool := bot_clears vine_wall 6000
+
+#[test]
+def test_bot_finishes_brick_yard : Bool := bot_clears brick_yard 6000
+
+/// The ability levels play the same way twice.
+#[test]
+def test_the_puzzle_levels_are_deterministic : Bool :=
+    let a : App := mo_venture_autopilot vine_wall in
+    let r1 : Run := play a (app_initial_world a) 0 600 in
+    let r2 : Run := play a (app_initial_world a) 0 600 in
+    match pair_positions r1.world {
+        Option.some p1 =>
+            match pair_positions r2.world {
+                Option.some p2 =>
+                    match p1 { Pair.pair u1 v1 =>
+                        match p2 { Pair.pair u2 v2 =>
+                            let a1 : Vec3 := u1 in
+                            let b1 : Vec3 := v1 in
+                            let a2 : Vec3 := u2 in
+                            let b2 : Vec3 := v2 in
+                            a1.x == a2.x && a1.y == a2.y && a1.z == a2.z
+                            && b1.x == b2.x && b1.y == b2.y && b1.z == b2.z } },
+                Option.none => false
+            },
+        Option.none => false
+    }

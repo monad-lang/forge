@@ -16,7 +16,7 @@
 // `world_input`. The camera is an orbit camera (`forge_app::orbit`):
 // right- or middle-drag or Q/E/R/F rotate, the wheel zooms. Every mesh has
 // a collider, so clicking picks by `forge_collide` raycast and records the
-// entity id in the canvas's `data-picked`.
+// entity id in the model (`WebMsg.click`); the HUD and the page are an Oak view.
 //
 // Run it in a browser: `devenv shell -- scripts/web-serve.sh`, then open
 // http://localhost:8080 (README.md, "Run the demo in a browser").
@@ -254,6 +254,6 @@ def oak_mount : IO Unit := web_mount demo rig
 def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler
 
 #[export "c"]
-def oak_tick : IO Unit := web_tick
+def oak_tick : IO Unit := web_tick demo rig
 
 def main : IO Unit := IO.pure unit

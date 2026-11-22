@@ -26,6 +26,9 @@ pub def kind_wood : I64 := 2
 
 pub def kind_gold : I64 := 3
 
+/// A wall Xiaomao can climb (green; its collider is on the climb layer).
+pub def kind_climb : I64 := 4
+
 /// A box platform: centre, half extents and kind. A moving one also has
 /// the far end of its path, `to` (a still one has `to = center`). `Copy`.
 #[derive Copy Clone]
@@ -82,6 +85,24 @@ pub def act_wait : I64 := 5
 /// The moving platform's far end: stand still and let it carry Mo there.
 pub def act_ride : I64 := 6
 
+/// Press the ability key (`X`) at the spot: spin or slam, whoever it is.
+pub def act_ability : I64 := 7
+
+/// Slam a wall of boxes ahead (Xiaozhu, in the air).
+pub def act_slam : I64 := 8
+
+/// Spin next to a switch (Xiaomao, on the ground).
+pub def act_spin : I64 := 9
+
+/// Climb the wall ahead (Xiaomao; the controller climbs automatically).
+pub def act_climb : I64 := 10
+
+/// Be controlling Xiaomao here (swap if the piggy is controlled).
+pub def act_as_kitty : I64 := 11
+
+/// Be controlling Xiaozhu here (swap if the kitty is controlled).
+pub def act_as_piggy : I64 := 12
+
 /// A landing spot on a platform top, and how to get there. `Copy`.
 #[derive Copy Clone]
 pub struct Way {
@@ -94,10 +115,48 @@ pub def way_at (w : Way) : Vec3 := w.at
 
 pub def way_act (w : Way) : I64 := w.act
 
-/// A whole level. `Copy` (identity: persistent lists).
+/// A switch Xiaomao's spin trips: it opens every gate with the same id.
+/// `Copy`.
+#[derive Copy Clone]
+pub struct Switch {
+    at : Vec3,
+    gate : I64
+}
+
+pub def switch_at (x : F64) (y : F64) (z : F64) (gate : I64) : Switch :=
+    { at := vec3 x y z, gate := gate : Switch }
+
+pub def switch_pos (s : Switch) : Vec3 := s.at
+
+pub def switch_gate (s : Switch) : I64 := s.gate
+
+/// A solid bar that a switch opens (it sinks away). `Copy`.
+#[derive Copy Clone]
+pub struct Gate {
+    at : Vec3,
+    half : Vec3,
+    gate : I64
+}
+
+pub def gate_box (x : F64) (y : F64) (z : F64) (hx : F64) (hy : F64) (hz : F64) (gate : I64) : Gate :=
+    { at := vec3 x y z, half := vec3 hx hy hz, gate := gate : Gate }
+
+pub def gate_pos (g : Gate) : Vec3 := g.at
+
+pub def gate_half (g : Gate) : Vec3 := g.half
+
+pub def gate_id (g : Gate) : I64 := g.gate
+
+/// A whole level. `Copy` (identity: persistent lists). `climbs` are walls
+/// (kept out of `plats` so the jump reachability tests never see them);
+/// `boxes`, `switches` and `gates` are the puzzle props.
 pub struct Level {
     name : String,
     plats : List Plat,
+    climbs : List Plat,
+    boxes : List Vec3,
+    switches : List Switch,
+    gates : List Gate,
     sparks : List Vec3,
     posts : List Vec3,
     goal : Vec3,
@@ -113,6 +172,14 @@ pub instance Copy Level {
 pub def level_name (l : Level) : String := l.name
 
 pub def level_plats (l : Level) : List Plat := l.plats
+
+pub def level_climbs (l : Level) : List Plat := l.climbs
+
+pub def level_boxes (l : Level) : List Vec3 := l.boxes
+
+pub def level_switches (l : Level) : List Switch := l.switches
+
+pub def level_gates (l : Level) : List Gate := l.gates
 
 pub def level_sparks (l : Level) : List Vec3 := l.sparks
 
@@ -130,8 +197,18 @@ pub def level_spark_count (l : Level) : I64 := List.length l.sparks
 
 pub def level_new (name : String) (plats : List Plat) (sparks : List Vec3) (posts : List Vec3) (goal : Vec3)
     (start : Vec3) (kill_y : F64) (route : List Way) : Level :=
-    { name := name, plats := plats, sparks := sparks, posts := posts, goal := goal, start := start,
-      kill_y := kill_y, route := route
+    { name := name, plats := plats, climbs := List.empty, boxes := List.empty,
+      switches := List.empty, gates := List.empty, sparks := sparks, posts := posts, goal := goal,
+      start := start, kill_y := kill_y, route := route
+      : Level }
+
+/// `lv` with puzzle props: climb walls, breakable boxes, switches and the
+/// gates they open.
+pub def level_puzzles (lv : Level) (climbs : List Plat) (boxes : List Vec3)
+    (switches : List Switch) (gates : List Gate) : Level :=
+    { name := lv.name, plats := lv.plats, climbs := climbs, boxes := boxes,
+      switches := switches, gates := gates, sparks := lv.sparks, posts := lv.posts,
+      goal := lv.goal, start := lv.start, kill_y := lv.kill_y, route := lv.route
       : Level }
 
 pub def way (x : F64) (y : F64) (z : F64) (act : I64) : Way := { at := vec3 x y z, act := act : Way }

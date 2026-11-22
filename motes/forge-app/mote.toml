@@ -40,5 +40,14 @@ workspace = true
 [dependencies.forge_webgl]
 workspace = true
 
+[dependencies.oak]
+workspace = true
+
+[dependencies.oak_ui]
+workspace = true
+
+[dependencies.oak_wasm]
+workspace = true
+
 [dependencies.web_wasm]
 workspace = true
