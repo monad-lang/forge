@@ -61,7 +61,31 @@ instance.exports.oak_mount();
 const canvas = byId('forge');
 if (!canvas || canvas.tagName !== 'CANVAS') fail('mount did not create <canvas id="forge">');
 
+const count = (calls, name) => calls.filter((c) => c[0] === name).length;
+
+let pending = null;
+globalThis.requestAnimationFrame = (cb) => { pending = cb; };
+let now = 1000;
+let gl = null;
+function frame() {
+  if (typeof pending !== 'function') fail('the frame loop is not scheduled');
+  const cb = pending;
+  pending = null;
+  const before = gl ? gl.calls.length : 0;
+  cb(now);
+  now += 16;
+  return gl ? gl.calls.slice(before) : [];
+}
+function frames(n) { for (let i = 0; i < n; i++) frame(); }
+
+host.start_ticks(instance);
+// Setup is the first frame's `after_render` effect (`oak_mount` only builds
+// the DOM), so the WebGL context and its programs exist after one tick.
+frame();
+
 if (mode === 'none') {
+  // The failure is reported as a message the next batch folds in.
+  frames(2);
   const status = byId('forge-status');
   if (!status || !status.textContent.includes('no WebGL context')) {
     fail(`no-WebGL status: ${JSON.stringify(status && status.textContent)}`);
@@ -70,25 +94,11 @@ if (mode === 'none') {
   process.exit(0);
 }
 
-const gl = glStub.contexts[0];
-const count = (calls, name) => calls.filter((c) => c[0] === name).length;
+gl = glStub.contexts[0];
+if (!gl) fail('setup did not create a WebGL context');
 if (count(gl.calls, 'linkProgram') !== 2) fail(`setup linked ${count(gl.calls, 'linkProgram')} programs`);
 if (count(gl.calls, 'bufferData') !== 6) fail(`setup made ${count(gl.calls, 'bufferData')} bufferData calls, want 6 (3 meshes)`);
 
-let pending = null;
-globalThis.requestAnimationFrame = (cb) => { pending = cb; };
-host.start_ticks(instance);
-let now = 1000;
-function frame() {
-  if (typeof pending !== 'function') fail('the frame loop is not scheduled');
-  const cb = pending;
-  pending = null;
-  const before = gl.calls.length;
-  cb(now);
-  now += 16;
-  return gl.calls.slice(before);
-}
-function frames(n) { for (let i = 0; i < n; i++) frame(); }
 const hud = (k) => {
   const n = byId('hud-' + k);
   return n ? n.textContent.trim() : undefined;
@@ -99,7 +109,13 @@ function settle(n) { frames(n); }
 const pos = () => (hud('pos') || '').split(' ').map(Number);
 
 // ── mount ──
-const f1 = frame();
+// The first frame that draws is frame 1 for every check below.
+let f1 = null;
+for (let i = 0; i < 5; i++) {
+  const f = frame();
+  if (count(f, 'drawElements') > 0) { f1 = f; break; }
+}
+if (!f1) fail('the game never drew after setup');
 if (count(f1, 'drawElements') < 40) fail(`frame 1 drew ${count(f1, 'drawElements')} meshes, want the whole level`);
 settle(4);
 if (hud('sparks') !== '0/20') fail(`HUD sparks ${JSON.stringify(hud('sparks'))}, want "0/20"`);
@@ -137,8 +153,11 @@ frames(15);
 const [, , z1] = pos();
 if (!(z1 < z0 - 2.0)) fail(`holding W moved Mo from z ${z0} to ${z1}, want at least 2 units into the level`);
 
-const jump = window.fire('keydown', { code: 'Space', key: ' ' });
-if (!jump.defaultPrevented) fail('Space did not have its default (scroll) prevented');
+// The page is the Oak program: window subscriptions are `WebEvent -> Msg`
+// and cannot ask the host to preventDefault (Oak's `Subscription.window` has
+// no flags). The page is full-screen with `overflow: hidden`, so Space does
+// not scroll it; the jump below is the check that the key reached the game.
+window.fire('keydown', { code: 'Space', key: ' ' });
 frames(12);
 const [, yUp] = pos();
 window.fire('keyup', { code: 'Space', key: ' ' });

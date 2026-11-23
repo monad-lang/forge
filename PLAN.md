@@ -286,7 +286,7 @@ forge/
     │       ├── lib.mo            # re-exports
     │       ├── ecs.mo             # Entity, ComponentId, Column, Archetype, World
     │       ├── world_m.mo         # WorldM = StateT World M; Monad/MonadState
-    │       ├── commands.mo        # Command, CommandBuffer, flush (WorldM)
+    │       ├── commands.mo        # WorldCommand, CommandBuffer, flush (WorldM)
     │       ├── query.mo           # Query, iteration, Changed filter
     │       └── tests/
     │           ├── ecs_tests.mo
@@ -484,7 +484,7 @@ As built (and verified: see "Verified end-to-end" above):
      `std/map.mo` pattern) or take a second owner via
      `Clone.clone (Shared.of x)`.
 2. `src/world_m.mo` — the transformer stack (Phase 2).
-3. `src/commands.mo` — `Command` sum type, `CommandBuffer`, `Commands`, and
+3. `src/commands.mo` — `WorldCommand` sum type, `CommandBuffer`, `Commands`, and
    `flush : World -> CommandBuffer -> World`:
    `commands_spawn` / `commands_despawn` / `commands_insert` / `commands_remove`.
 4. `src/query.mo` — `query_iter` / `query_entities` / `row_select`, plus
@@ -1191,6 +1191,8 @@ Recorded in full, with repros and the workarounds above, in
 | G15 | a user type named `Prop` is shadowed by a built-in: `Prop.pa` is an "unknown variable", and its `Copy` instance is ignored ("`p` : Prop is used 2 times but is affine"), while the same type named `Prup` works | forge-animate's type is `Property` |
 | G16 | a PRIVATE `def` in one mote clashes with a `pub def` of the same name imported from another: with `a::controller` holding a private `clip` and `b::animator` a public one, a third mote's `use b {clip}` then `clip x` fails with "`clip` is referenced from c::look but declared in b::animator, a::controller -- add an explicit `use <module> {clip}`", even though the `use` is explicit. Verified on `nightly-2026-11-21-4916d8fa`; renaming the private def fixes it. The same family as the private-struct clash (`Run`) met in Phase 11 | forge-collide's helper is `clip_along`; forge-animate's internal struct is `AnimRun` |
 | G17 | a user type named like a prelude type loses its constructor qualifier: with `pub type Signal (A : Type) { mk (x : A) }`, `match s { Signal.mk x => x }` fails with "ambiguous constructor `mk`: could resolve to either `std.derive::CopyNames` or `sys.sys::Stat`" (`sys::Signal` exists). Regressed between `b0fe09df` and `4916d8fa`; verified on `nightly-2026-11-21-4916d8fa`; renaming the type to `Sig` fixes the repro | forge-reactive's constructor is `Signal.signal_mk` |
+| G18 | `#[derive Copy]` on a large struct (~16+ fields) explodes test-driver IR codegen: `test: elaborate`/`check` are fast, then `test: ir` never appears (27 fields: >120 s). `#[derive Clone]` alone is fine; an explicit identity `Copy` is 3 s. Verified on `nightly-2026-11-22-aaf39e36` | explicit identity `Copy` instances (`Pair.pair x x`) for Mo Venture's large structs; `game_tests` 41/41 and the playthroughs 9/9 |
+| G19 | two loaded modules declare the same bare type name (`forge_core::commands::Command` and `oak::app::Command`), so the wasm build's whole-program scope resolves neither: `monad check` passes, but the build reports `forge_app.web::on_frame`/`update` "cannot resolve `{ .. }`" and `oak_wasm` "ambiguous constructor `none`". Reproduced with `scripts/web-build.sh mo-venture` on `nightly-2026-11-22-aaf39e36` | forge-core's type is `WorldCommand`; the build and all four `web-smoke` modes pass |
 
 The `4916d8fa` pin also carries monad's fixes for G2, G3, G4, G8, G9 and G12 (commits `856591f7`, `95b4e846`, `f1a257b6`, `6a571381`, `3592122b`, `3295e316`). Forge has not yet dropped those workarounds; that's the next cleanup. G4 now makes an unresolved `use` an error.
 

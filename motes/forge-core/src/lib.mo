@@ -1,5 +1,5 @@
 // forge-core: ECS (Entity, ComponentId, Column, Archetype, ComponentStorage,
-// World), deferred edits (Command/CommandBuffer/Commands), and Query. Phase 1
+// World), deferred edits (WorldCommand/CommandBuffer/Commands), and Query. Phase 1
 // + Phase 2, see ../../../PLAN.md.
 
 pub use lib::ecs {
@@ -26,7 +26,7 @@ pub use lib::ecs {
 }
 
 pub use lib::commands {
-    Command, CommandBuffer, Commands,
+    WorldCommand, CommandBuffer, Commands,
     empty_buffer, empty_commands,
     commands_spawn, commands_despawn, commands_insert, commands_remove,
     flush, flush_commands
