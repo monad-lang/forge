@@ -561,13 +561,13 @@ def puzzle_world (lv : Level) : World := level_world (loaded_looks load) lv
 def box_level : Level :=
     level_puzzles
         (level_new "Boxes" [plat 0.0 (0.0 - 0.5) 0.0 3.0 0.5 3.0 kind_grass] [] []
-                   (vec3 0.0 0.0 8.0) (vec3 0.0 0.0 2.0) (0.0 - 8.0) [])
+                   (vec3 0.0 0.0 8.0) (vec3 0.0 0.0 0.0) (0.0 - 8.0) [])
         List.empty [vec3 0.0 0.0 (0.0 - 1.0)] List.empty List.empty
 
 def gate_level : Level :=
     level_puzzles
         (level_new "Gate" [plat 0.0 (0.0 - 0.5) 0.0 3.0 0.5 3.0 kind_grass] [] []
-                   (vec3 0.0 0.0 8.0) (vec3 0.0 0.0 2.0) (0.0 - 8.0) [])
+                   (vec3 0.0 0.0 8.0) (vec3 0.0 0.0 0.0) (0.0 - 8.0) [])
         List.empty List.empty [switch_at 0.0 0.0 (0.0 - 1.0) 1] [gate_box 0.0 2.0 (0.0 - 3.0) 1.5 2.0 0.3 1]
 
 def slam_state (h : I64) : MoState := mo_with_ability (mo_rest_for h) ability_slam 0.0

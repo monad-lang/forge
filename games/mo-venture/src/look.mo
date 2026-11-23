@@ -43,7 +43,6 @@ use lib::mo {
 // ── Assets ──────────────────────────────────────────────────────────
 
 /// Handles into the game's asset tables. `Copy`.
-#[derive Copy Clone]
 pub struct Looks {
     cube : MeshHandle,
     sphere : MeshHandle,
@@ -64,6 +63,10 @@ pub struct Looks {
     flag_on : MaterialHandle,
     beacon : MaterialHandle,
     sun : MaterialHandle
+}
+
+pub instance Copy Looks {
+    def copy (l : Looks) : Pair Looks Looks := Pair.pair l l
 }
 
 /// The asset tables and the handles into them. `Copy`.
@@ -357,9 +360,10 @@ pub def box_half : Vec3 := vec3 0.7 1.2 0.6
 
 /// A crate at ground point `p`: a wooden cube with a solid collider.
 def spawn_box (lk : Looks) (w : World) (p : Vec3) : World :=
-    let centre : Vec3 := v3_add p (vec3 0.0 box_half.y 0.0) in
-    let e : Spawned := shown w centre quat_identity (v3_scale box_half 2.0) lk.cube lk.wood in
-    insert_component (set_collider e.world e.entity (collider (shape_box box_half))) e.entity box_name (Any.any true)
+    let half : Vec3 := box_half in
+    let centre : Vec3 := v3_add p (vec3 0.0 half.y 0.0) in
+    let e : Spawned := shown w centre quat_identity (v3_scale half 2.0) lk.cube lk.wood in
+    insert_component (set_collider e.world e.entity (collider (shape_box half))) e.entity box_name (Any.any true)
 
 #[terminating]
 def spawn_boxes (lk : Looks) (w : World) (ps : List Vec3) : World :=

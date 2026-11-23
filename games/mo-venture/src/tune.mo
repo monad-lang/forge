@@ -5,7 +5,6 @@
 use std::derive {}
 
 /// Movement tuning. `Copy`.
-#[derive Copy Clone]
 pub struct Tune {
     gravity : F64,
     jump_speed : F64,
@@ -34,6 +33,10 @@ pub struct Tune {
     leash_height : F64,
     follow_behind : F64,
     follow_sprint : F64
+}
+
+pub instance Copy Tune {
+    def copy (t : Tune) : Pair Tune Tune := Pair.pair t t
 }
 
 /// The game's tuning:

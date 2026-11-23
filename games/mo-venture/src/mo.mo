@@ -45,7 +45,6 @@ use lib::hero {hero_xiaozhu, hero_xiaomao, ability_none, ability_spin, ability_s
 
 /// What the player (or the autopilot) wants this frame. `mx`/`mz` is the
 /// run direction in world space (length 0..1). `Copy`.
-#[derive Copy Clone]
 pub struct Intent {
     mx : F64,
     mz : F64,
@@ -55,6 +54,10 @@ pub struct Intent {
     sprint : Bool,
     ability_pressed : Bool,
     swap_pressed : Bool
+}
+
+pub instance Copy Intent {
+    def copy (i : Intent) : Pair Intent Intent := Pair.pair i i
 }
 
 pub def intent_none : Intent :=
@@ -111,7 +114,6 @@ pub def world_set_intent (world : World) (i : Intent) : World :=
 /// Mo's motion state. Timers count seconds since an event (large when it
 /// is long past). `facing` is a unit vector on the ground plane.
 /// `air_used` counts mid-air jumps this airtime. `Copy`.
-#[derive Copy Clone]
 pub struct MoState {
     vel : Vec3,
     grounded : Bool,
@@ -126,6 +128,10 @@ pub struct MoState {
     climbing : Bool,
     ability : I64,
     ability_age : F64
+}
+
+pub instance Copy MoState {
+    def copy (s : MoState) : Pair MoState MoState := Pair.pair s s
 }
 
 pub def long_ago : F64 := 100.0

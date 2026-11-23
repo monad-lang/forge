@@ -40,7 +40,6 @@ pub def msg_checkpoint : I64 := 1
 pub def msg_goal : I64 := 2
 
 /// The run so far. `Copy`.
-#[derive Copy Clone]
 pub struct GameState {
     sparks : I64,
     total : I64,
@@ -52,6 +51,10 @@ pub struct GameState {
     kill_y : F64,
     message : I64,
     message_age : F64
+}
+
+pub instance Copy GameState {
+    def copy (g : GameState) : Pair GameState GameState := Pair.pair g g
 }
 
 pub def game_new (lv : Level) : GameState :=
