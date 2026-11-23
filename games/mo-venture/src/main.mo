@@ -15,6 +15,6 @@ def oak_mount : IO Unit := web_mount mo_venture (mo_rig skyway)
 def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler
 
 #[export "c"]
-def oak_tick : IO Unit := web_tick mo_venture (mo_rig skyway)
+def oak_tick : IO Unit := web_tick
 
 def main : IO Unit := IO.pure unit

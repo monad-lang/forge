@@ -13,9 +13,12 @@
 //     def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler
 //
 //     #[export "c"]
-//     def oak_tick : IO Unit := web_tick my_app my_rig
+//     def oak_tick : IO Unit := web_tick
 //
 //     def main : IO Unit := IO.pure unit
+//
+// `oak_tick` takes no app: the mounted model is in oak's state, and passing
+// the app would rebuild it (and its level) on every frame (Monad is strict).
 //
 // Oak owns the page: the view renders the canvas (`#forge`, kept at a stable
 // position so its GL context survives), the HUD panels and -- on a touch
@@ -54,10 +57,10 @@ use oak::events {
 use oak::app {Command, Host, Program}
 use oak_wasm::program {Runtime.mount, Runtime.dispatch, Runtime.tick}
 use oak_ui::theme {Ui.Theme}
-use oak_ui::base {Ui.style_tag_auto}
+use oak_ui::css {Ui.stylesheet_auto}
 use oak_ui::layout {Ui.row}
-use forge_core::ecs {World, Entity, entity_id}
-use forge_math {f64_abs, f64_sqrt}
+use forge_core::ecs {World, Entity, entity_id, empty_world}
+use forge_math {v3_zero}
 use forge_render {Camera, FramePlan, Picked, camera_screen_ray, pick_entity}
 use forge_render {Assets}
 use forge_webgl {
@@ -65,10 +68,12 @@ use forge_webgl {
     size_width, size_height
 }
 use lib::app {
-    App, CameraRig, Frame, frame_world, app_initial_world, app_assets, app_frame_viewed, app_plan, rig_camera
+    App, CameraRig, Frame, frame_world, app_initial_world, app_assets, app_frame_viewed, app_plan,
+    app_new, camera_rig, rig_camera
 }
 use lib::orbit {world_camera_rig}
-use lib::hud {Hud, hud_empty, world_hud, hud_get}
+use lib::hud {Hud, world_hud, hud_lookup}
+use lib::stick {stick_radius, stick_dirs, knob_of}
 use lib::pick {world_pick}
 use lib::input {
     Input, InputEvent, input_empty, input_apply, input_end_frame,
@@ -95,18 +100,33 @@ pub struct WebModel {
     setting_up : Bool,
     knob_x : F64,
     knob_y : F64,
-    held : List String
+    held : List String,
+    /// The pointer that owns the touch stick; -1 when none.
+    stick_id : I64,
+    /// The combined oak_ui + forge stylesheet, built once at mount.
+    css : String
 }
 
 pub instance Copy WebModel {
     def copy (m : WebModel) : Pair WebModel WebModel := Pair.pair m m
 }
 
-def model_new (a : App) (rig : CameraRig) : WebModel :=
+def model_new_with (a : App) (rig : CameraRig) (css : String) : WebModel :=
     { app := a, rig := rig, world := app_initial_world a, input := input_empty,
       last_ms := 0.0 - 1.0, renderer := Option.none, status := "", picked := 0 - 1,
       vw := 1.0, vh := 1.0, touch := false, setting_up := false, knob_x := 0.0, knob_y := 0.0,
-      held := List.empty : WebModel }
+      held := List.empty, stick_id := 0 - 1, css := css : WebModel }
+
+/// The mounted model. The stylesheet is static (two fixed themes), so it is
+/// built here, once, rather than in `view` on every render.
+def model_new (a : App) (rig : CameraRig) : WebModel :=
+    model_new_with a rig
+        (String.concat (Ui.stylesheet_auto Ui.Theme.light Ui.Theme.dark) forge_css)
+
+/// The tick's program needs an init value it never uses (the mounted model
+/// is in oak's state; `Runtime.tick` reads only update/view/subscriptions).
+/// Keep it cheap: no app or level construction.
+def model_blank : WebModel := model_new_with app_new (camera_rig v3_zero v3_zero 1.0) ""
 
 // ── Messages ────────────────────────────────────────────────────────
 
@@ -119,8 +139,11 @@ pub type WebMsg {
     key (code : String) (down : Bool),
     pointer (kind : String) (x : F64) (y : F64) (button : I64),
     wheel (dy : F64) (mode : I64),
-    stick (x : F64) (y : F64),
-    stick_release,
+    /// The touch stick: a press (which takes ownership, by pointer id), a
+    /// move from the owning pointer, and its release.
+    stick_start (id : I64) (x : F64) (y : F64),
+    stick (id : I64) (x : F64) (y : F64),
+    stick_release (id : I64),
     touch_key (code : String) (down : Bool),
     release,
     click (x : F64) (y : F64),
@@ -139,38 +162,8 @@ pub type WebFx {
 
 // ── Touch stick ─────────────────────────────────────────────────────
 
-/// The stick's radius in CSS pixels (its box is 156x156; see `forge_css`).
-def stick_radius : F64 := 78.0
-
-/// Dead zone, as a fraction of the radius: a thumb has to move this far
-/// before any direction engages (0.25 was too twitchy in play).
-def stick_dead : F64 := 0.4
-
-/// Half the diagonal cone (22.5 degrees): a drag this side of an axis
-/// counts toward it, so eight directions come out of a round stick.
-def stick_cone : F64 := 0.41421356
-
-def stick_len (x : F64) (y : F64) : F64 := f64_sqrt (x * x + y * y)
-
-/// The direction keys `(dx, dy)` (from the stick's centre) asks for, as
-/// four booleans (W, S, A, D). Past the dead zone, the dominant axis wins
-/// inside its cone; a diagonal engages both.
-def stick_dirs (x : F64) (y : F64) : List Bool :=
-    let len : F64 := stick_len x y in
-    if len < stick_radius * stick_dead then [false, false, false, false]
-    else
-        let ax : F64 := f64_abs x in
-        let ay : F64 := f64_abs y in
-        let wide : Bool := ay >= ax * stick_cone in
-        let tall : Bool := ax >= ay * stick_cone in
-        [ y < 0.0 && wide, y > 0.0 && wide, x < 0.0 && tall, x > 0.0 && tall ]
-
-/// The knob offset for the drawn position, clamped to the stick.
-def knob_of (x : F64) (y : F64) : Pair F64 F64 :=
-    let len : F64 := stick_len x y in
-    if len > stick_radius && len > 0.0
-    then Pair.pair (x * stick_radius / len) (y * stick_radius / len)
-    else Pair.pair x y
+/// The stick's direction math lives in the native `lib::stick` module (with
+/// its own tests); this file keeps the model update and the event glue.
 
 // ── Event helpers ──
 //
@@ -185,7 +178,19 @@ def click_msg ({ offset_x, offset_y, .. } : WebEvent) : WebMsg := WebMsg.click o
 
 def wheel_msg ({ delta_y, delta_mode, .. } : WebEvent) : WebMsg := WebMsg.wheel delta_y delta_mode
 
-def stick_msg ({ offset_x, offset_y, .. } : WebEvent) : WebMsg := WebMsg.stick offset_x offset_y
+def stick_start_msg ({ offset_x, offset_y, pointer_id, .. } : WebEvent) : WebMsg :=
+    WebMsg.stick_start pointer_id offset_x offset_y
+
+def stick_move_msg ({ offset_x, offset_y, pointer_id, .. } : WebEvent) : WebMsg :=
+    WebMsg.stick pointer_id offset_x offset_y
+
+def stick_release_msg ({ pointer_id, .. } : WebEvent) : WebMsg :=
+    WebMsg.stick_release pointer_id
+
+/// `Html.on_pointerleave`/`on_pointercancel` take a CONSTANT message, so they
+/// cannot see the pointer id; this is the generic-attribute form instead.
+def stick_release_hr (e : WebEvent) : HandlerResult WebMsg :=
+    HandlerResult.msg (stick_release_msg e)
 
 def key_msg (down : Bool) ({ code, .. } : WebEvent) : WebMsg := WebMsg.key code down
 
@@ -262,15 +267,36 @@ def stick_model (m : WebModel) (x : F64) (y : F64) : WebModel :=
             { m1 with knob_x := kx, knob_y := ky }
     }
 
+/// A press takes ownership: the stick follows only this pointer id from now
+/// on (a second finger or a mouse hover must not steer).
+def stick_start_model (m : WebModel) (id : I64) (x : F64) (y : F64) : WebModel :=
+    stick_model ({ m with stick_id := id }) x y
+
+def stick_move_model (m : WebModel) (id : I64) (x : F64) (y : F64) : WebModel :=
+    if id == m.stick_id then stick_model m x y else m
+
 def stick_release_model (m : WebModel) : WebModel :=
     let m1 : WebModel := apply_dirs m [false, false, false, false] in
     { m1 with knob_x := 0.0, knob_y := 0.0 }
 
-/// Every held on-screen key released (pointer up anywhere, window blur).
+/// Release only the pointer that owns the stick (another finger's up is a
+/// no-op).
+def stick_release_for (m : WebModel) (id : I64) : WebModel :=
+    if id == m.stick_id then
+        let m1 : WebModel := stick_release_model m in
+        { m1 with stick_id := 0 - 1 }
+    else m
+
+/// Release the stick regardless of which pointer owns it (blur, teardown).
+def stick_clear (m : WebModel) : WebModel :=
+    let m1 : WebModel := stick_release_model m in
+    { m1 with stick_id := 0 - 1 }
+
+/// Every held on-screen key released (window blur).
 #[terminating]
 def release_all (m : WebModel) (held : List String) : WebModel :=
     match held {
-        List.empty => stick_release_model m,
+        List.empty => stick_clear m,
         List.cons c rest => release_all (touch_model m c false) rest
     }
 
@@ -317,8 +343,9 @@ def update (m : WebModel) (msg : WebMsg) : Pair WebModel (Command WebFx WebMsg) 
         WebMsg.key code down => Pair.pair (key_model m code down) Command.none,
         WebMsg.pointer kind x y button => Pair.pair (pointer_model m kind x y button) Command.none,
         WebMsg.wheel dy mode => Pair.pair (with_input m (input_wheel (input_wheel_pixels dy mode))) Command.none,
-        WebMsg.stick x y => Pair.pair (stick_model m x y) Command.none,
-        WebMsg.stick_release => Pair.pair (stick_release_model m) Command.none,
+        WebMsg.stick_start id x y => Pair.pair (stick_start_model m id x y) Command.none,
+        WebMsg.stick id x y => Pair.pair (stick_move_model m id x y) Command.none,
+        WebMsg.stick_release id => Pair.pair (stick_release_for m id) Command.none,
         WebMsg.touch_key code down => Pair.pair (touch_model m code down) Command.none,
         WebMsg.release => Pair.pair (release_all m m.held) Command.none,
         WebMsg.click x y => Pair.pair (click_model m x y) Command.none,
@@ -329,19 +356,18 @@ def update (m : WebModel) (msg : WebMsg) : Pair WebModel (Command WebFx WebMsg) 
 // ── Subscriptions ───────────────────────────────────────────────────
 
 /// The frame loop, the keys (on `window`, so the canvas need not have
-/// focus), blur, and a pointer up/cancel anywhere releasing what is held.
+/// focus), and blur. Pointer release is per element: a window-wide
+/// `pointerup` would release a held stick when the other thumb lifts.
 def subscriptions (_m : WebModel) : List (Subscription WebMsg) :=
     [ Subscription.animation_frame (fn (e : WebEvent) => WebMsg.frame e.time_stamp),
       Subscription.window "keydown" (fn (e : WebEvent) => WebMsg.key e.code true),
       Subscription.window "keyup" (fn (e : WebEvent) => WebMsg.key e.code false),
-      Subscription.window "blur" (fn (_e : WebEvent) => WebMsg.window_blur),
-      Subscription.window "pointerup" (fn (_e : WebEvent) => WebMsg.release),
-      Subscription.window "pointercancel" (fn (_e : WebEvent) => WebMsg.release) ]
+      Subscription.window "blur" (fn (_e : WebEvent) => WebMsg.window_blur) ]
 
 // ── View ────────────────────────────────────────────────────────────
 
-def hud_text (m : WebModel) (k : String) : String :=
-    match hud_get m.world k {
+def hud_text (h : Hud) (k : String) : String :=
+    match hud_lookup h k {
         Option.some v => v,
         Option.none => ""
     }
@@ -350,18 +376,18 @@ def has_text (s : String) : Bool := Bool.not (String.is_empty s)
 
 def hero_mark (hero : String) : String := if hero == "Xiaomao Mo" then "\u{1F431} " else "\u{1F437} "
 
-def title_text (m : WebModel) : String :=
-    let lvl : String := hud_text m "level-name" in
-    let hero : String := hud_text m "hero" in
+def title_text (h : Hud) : String :=
+    let lvl : String := hud_text h "level-name" in
+    let hero : String := hud_text h "hero" in
     let head : String := (if has_text lvl
         then String.concat "Mo Venture · " lvl
         else "Mo Venture") in
     if has_text hero then String.concat head (String.concat " · " (String.concat (hero_mark hero) hero))
     else head
 
-def panel_title (m : WebModel) : Oak.Node WebMsg :=
+def panel_title (h : Hud) : Oak.Node WebMsg :=
     Html.div [Html.id_ "hud-title", Html.class_ ["forge-panel"]]
-        [Html.text (title_text m)]
+        [Html.text (title_text h)]
 
 /// One live value: its label, then the value in `#hud-<key>` (what tests
 /// and page scripts read, beside what the player sees).
@@ -370,21 +396,21 @@ def stat (key : String) (label : String) (value : String) : Oak.Node WebMsg :=
         [Html.span [Html.class_ ["forge-label"]] [Html.text label],
          Html.span [Html.id_ (String.concat "hud-" key)] [Html.text value]]
 
-def panel_stats (m : WebModel) : Oak.Node WebMsg :=
+def panel_stats (h : Hud) : Oak.Node WebMsg :=
     Ui.row List.empty [Html.id_ "hud-stats", Html.class_ ["forge-panel"]]
-        [stat "sparks" "sparks" (hud_text m "sparks"),
-         stat "time" "time" (hud_text m "time"),
-         stat "falls" "falls" (hud_text m "falls")]
+        [stat "sparks" "sparks" (hud_text h "sparks"),
+         stat "time" "time" (hud_text h "time"),
+         stat "falls" "falls" (hud_text h "falls")]
 
 /// The game's message line (empty most of the time) and, beside it, the
 /// headless position readout (`#hud-pos`) the smoke test follows Mo by.
-def panel_message (m : WebModel) : Oak.Node WebMsg :=
-    let msg : String := hud_text m "message" in
+def panel_message (h : Hud) : Oak.Node WebMsg :=
+    let msg : String := hud_text h "message" in
     let cls : List String := if has_text msg then ["forge-panel"] else ["forge-panel", "forge-hidden"] in
     Html.div [Html.id_ "hud-message", Html.class_ cls]
         [Html.text msg,
          Html.span [Html.id_ "hud-pos", Html.class_ ["forge-hidden"]]
-             [Html.text (hud_text m "pos")]]
+             [Html.text (hud_text h "pos")]]
 
 /// A setup failure (no WebGL, a shader error), where a player can see it.
 def status_node (m : WebModel) : Oak.Node WebMsg :=
@@ -413,10 +439,13 @@ def help_panel : Oak.Node WebMsg :=
 def tbutton (id : String) (cls : List String) (label : String) (code : String) : Oak.Node WebMsg :=
     Html.button
         [ Html.id_ id, Html.class_ cls, Html.attr "type" "button",
-          Html.on_pointerdown (fn (_e : WebEvent) => WebMsg.touch_key code true),
+          Html.on "pointerdown" ({ prevent_default := true })
+              (fn (_e : WebEvent) => HandlerResult.prevent (WebMsg.touch_key code true)),
           Html.on_pointerup (fn (_e : WebEvent) => WebMsg.touch_key code false),
-          Html.on_pointerleave (fn (_e : WebEvent) => WebMsg.touch_key code false),
-          Html.on_pointercancel (fn (_e : WebEvent) => WebMsg.touch_key code false) ]
+          Html.on "pointerleave" ListenerFlags.none
+              (fn (_e : WebEvent) => HandlerResult.msg (WebMsg.touch_key code false)),
+          Html.on "pointercancel" ListenerFlags.none
+              (fn (_e : WebEvent) => HandlerResult.msg (WebMsg.touch_key code false)) ]
         [Html.text label]
 
 def knob_style (m : WebModel) : String :=
@@ -426,29 +455,32 @@ def knob_style (m : WebModel) : String :=
 def stick_node (m : WebModel) : Oak.Node WebMsg :=
     Html.div
         [ Html.id_ "stick", Html.class_ ["stick"],
-          Html.on_pointerdown stick_msg,
-          Html.on_pointermove stick_msg,
-          Html.on_pointerup (fn (_e : WebEvent) => WebMsg.stick_release),
-          Html.on_pointerleave (fn (_e : WebEvent) => WebMsg.stick_release),
-          Html.on_pointercancel (fn (_e : WebEvent) => WebMsg.stick_release) ]
+          Html.on "pointerdown" ({ prevent_default := true })
+              (fn (e : WebEvent) => HandlerResult.prevent (stick_start_msg e)),
+          Html.on_pointermove stick_move_msg,
+          Html.on_pointerup stick_release_msg,
+          Html.on "pointerleave" ListenerFlags.none stick_release_hr,
+          Html.on "pointercancel" ListenerFlags.none stick_release_hr ]
         [Html.div [Html.id_ "knob", Html.class_ ["knob"], Html.style_attr (knob_style m)] List.empty]
 
-def touch_ui (m : WebModel) : Oak.Node WebMsg :=
-    Html.div [Html.id_ "touch", Html.class_ ["forge-touch"]]
+def touch_ui (m : WebModel) (h : Hud) : Oak.Node WebMsg :=
+    Html.div [Html.id_ "touch", Html.class_ ["forge-touch"],
+              Html.on "contextmenu" ({ prevent_default := true })
+                  (fn (_e : WebEvent) => HandlerResult.prevent WebMsg.noop)]
         [ stick_node m,
           tbutton "t-jump" ["tbtn", "tbtn-jump"] "JUMP" "Space",
           tbutton "t-dash" ["tbtn", "tbtn-dash"] "DASH" "ShiftLeft",
           tbutton "t-camleft" ["tbtn", "tbtn-camleft"] "◀" "KeyQ",
           tbutton "t-camright" ["tbtn", "tbtn-camright"] "▶" "KeyE",
-          tbutton "t-ability" ["tbtn", "tbtn-ability"] (ability_label m) "KeyX",
+          tbutton "t-ability" ["tbtn", "tbtn-ability"] (ability_label h) "KeyX",
           tbutton "t-hero" ["tbtn", "tbtn-small", "tbtn-right-1"] "SWAP" "KeyC",
           tbutton "t-pilot" ["tbtn", "tbtn-small", "tbtn-right-2"] "P" "KeyP",
           tbutton "t-restart" ["tbtn", "tbtn-small", "tbtn-right-3"] "↺" "Backspace",
           tbutton "t-next" ["tbtn", "tbtn-small", "tbtn-right-4"] "▶▶" "Enter" ]
 
 /// The ability button says what `X` does for the controlled hero.
-def ability_label (m : WebModel) : String :=
-    if hud_text m "hero" == "Xiaomao Mo" then "SPIN" else "SLAM"
+def ability_label (h : Hud) : String :=
+    if hud_text h "hero" == "Xiaomao Mo" then "SPIN" else "SLAM"
 
 def canvas_node : Oak.Node WebMsg :=
     Html.canvas
@@ -457,7 +489,7 @@ def canvas_node : Oak.Node WebMsg :=
           Html.on_pointerdown (pointer_msg "down"),
           Html.on_pointerup (pointer_msg "up"),
           Html.on_pointermove (pointer_msg "move"),
-          Html.on_pointerleave (fn (_e : WebEvent) => WebMsg.pointer "leave" 0.0 0.0 0),
+          Html.on_pointerleave (WebMsg.pointer "leave" 0.0 0.0 0),
           Html.on_click_with click_msg,
           Html.on "contextmenu" ({ prevent_default := true })
               (fn (_e : WebEvent) => HandlerResult.prevent WebMsg.noop),
@@ -468,21 +500,22 @@ def canvas_node : Oak.Node WebMsg :=
 /// The page. `#forge` keeps its position across renders (no keys, one
 /// canvas), so its GL context survives every patch.
 def view (m : WebModel) : Oak.Node WebMsg :=
+    let h : Hud := world_hud m.world in
     Html.div [Html.id_ "app", Html.class_ ["forge-app"]]
-        [ Ui.style_tag_auto Ui.Theme.light Ui.Theme.dark,
-          Html.style List.empty forge_css,
+        [ Html.style List.empty m.css,
           canvas_node,
-          panel_title m,
-          panel_stats m,
-          panel_message m,
+          panel_title h,
+          panel_stats h,
+          panel_message h,
           status_node m,
           Html.span [Html.id_ "picked", Html.class_ ["forge-hidden"]]
               [Html.text (I64.to_string m.picked)],
-          (if m.touch then touch_ui m else help_panel) ]
+          (if m.touch then touch_ui m h else help_panel) ]
 
 /// forge's own layout: the canvas fills the viewport, the HUD sits over it,
-/// and the touch controls sit at the bottom corners. Oak's own CSS
-/// (`Ui.style_tag_auto`) themes the panels; these rules only place them.
+/// and the touch controls sit at the bottom corners. The oak_ui stylesheet
+/// (cached in `WebModel.css` at mount) themes the panels; these rules only
+/// place them.
 def forge_css : String :=
     String.concat_list
         [
@@ -499,8 +532,9 @@ def forge_css : String :=
           ".forge-key, #hud-help kbd { font: 12px ui-monospace, monospace; padding: 0 .32em; border: 1px solid #9ab; border-radius: 4px; margin-right: .15em; }\n",
           ".forge-hidden { display: none; }\n",
           ".stick { position: fixed; left: 1.2rem; bottom: 1.2rem; width: 156px; height: 156px; border-radius: 50%; background: rgba(10, 20, 40, .28); border: 2px solid rgba(255, 255, 255, .35); touch-action: none; z-index: 2; }\n",
-          ".knob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: rgba(255, 255, 255, .5); }\n",
+          ".knob { pointer-events: none; position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: rgba(255, 255, 255, .5); }\n",
           ".tbtn { position: fixed; z-index: 2; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .45); background: rgba(10, 20, 40, .35); color: #fff; font-weight: 700; font-size: 16px; touch-action: none; }\n",
+          "#touch, #touch * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }\n",
           ".tbtn-jump { right: 1.4rem; bottom: 1.6rem; width: 88px; height: 88px; }\n",
           ".tbtn-dash { right: 8rem; bottom: 1.1rem; width: 72px; height: 72px; }\n",
           ".tbtn-camleft { right: 7.7rem; bottom: 7rem; width: 56px; height: 56px; }\n",
@@ -560,9 +594,16 @@ def web_host : Host IO WebFx WebMsg := Host.host run_fx
 
 // ── The program and the exports ─────────────────────────────────────
 
-/// The page as an Oak program over `a` and `rig`.
+/// The page as an Oak program over `a` and `rig` (mount only).
 pub def web_program (a : App) (rig : CameraRig) : Program WebModel WebMsg WebFx :=
     Program.with_subs (model_new a rig) update view subscriptions
+
+/// The program a tick needs. `Runtime.tick` reads only update/view/
+/// subscriptions from it; the mounted model is in oak's state, so `init` is
+/// never used after `Runtime.mount`. A blank, cheap model keeps the app and
+/// the level out of the per-frame path.
+pub def web_program_blank : Program WebModel WebMsg WebFx :=
+    Program.with_subs model_blank update view subscriptions
 
 /// The `oak_mount` body.
 pub def web_mount (a : App) (rig : CameraRig) : IO Unit := Runtime.mount (web_program a rig)
@@ -570,5 +611,7 @@ pub def web_mount (a : App) (rig : CameraRig) : IO Unit := Runtime.mount (web_pr
 /// The `oak_dispatch_event` body.
 pub def web_dispatch (handler : I64) : IO Unit := Runtime.dispatch handler
 
-/// The `oak_tick` body.
-pub def web_tick (a : App) (rig : CameraRig) : IO Unit := Runtime.tick (web_program a rig) web_host
+/// The `oak_tick` body. Takes no app: the arguments would be evaluated on
+/// every tick (Monad is strict), rebuilding the app and its level for a
+/// value `Runtime.tick` discards.
+pub def web_tick : IO Unit := Runtime.tick web_program_blank web_host

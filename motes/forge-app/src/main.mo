@@ -254,6 +254,6 @@ def oak_mount : IO Unit := web_mount demo rig
 def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler
 
 #[export "c"]
-def oak_tick : IO Unit := web_tick demo rig
+def oak_tick : IO Unit := web_tick
 
 def main : IO Unit := IO.pure unit

@@ -24,7 +24,7 @@
 import { readFile } from 'node:fs/promises';
 import { imports } from '../web.js';
 import { host } from '../web_runtime.js';
-import { installDocument, body, fail } from './stub_dom.mjs';
+import { installDocument, body, fail, stub } from './stub_dom.mjs';
 import { installGl, glStub } from './stub_gl.mjs';
 
 const path = process.argv[2];
@@ -35,6 +35,14 @@ if (!path) {
 }
 
 installDocument();
+// The page is a touch page on a phone; the checks below include the stick.
+// (The stub's matchMedia reads this map at call time.) `TOUCH=0` runs the
+// desktop (help-panel) page instead.
+const touch = process.env.TOUCH !== '0';
+if (touch) {
+  stub.mediaMatches['(pointer: coarse)'] = true;
+  stub.mediaMatches['(any-pointer: coarse)'] = true;
+}
 installGl({ dpr: 1, clientWidth: 640, clientHeight: 360 });
 glStub.mode = mode === 'webgl1-nodepth' ? 'webgl1' : mode;
 glStub.noDepthTexture = mode === 'webgl1-nodepth';
@@ -178,6 +186,59 @@ if (!(zBot < -6 && yBot > 1.8)) fail(`the autopilot did not climb the stairs (at
 if (!(sparksAfter >= sparksBefore + 3)) fail(`the autopilot collected ${sparksAfter - sparksBefore} sparks`);
 if (hud('falls') !== '0') fail(`the autopilot fell ${hud('falls')} times`);
 
+// ── touch stick ──
+// Hand control back to the player, then check the stick: it must be
+// stick-local (the knob is pointer-events:none), owned by one pointer, and
+// released by its leave/cancel handlers.
+if (touch) {
+window.fire('keydown', { code: 'KeyP', key: 'p' });
+frame();
+window.fire('keyup', { code: 'KeyP', key: 'p' });
+frames(20);
+const stick = byId('stick');
+const jumpBtn = byId('t-jump');
+if (!stick || !jumpBtn) fail('the touch UI is missing despite a coarse pointer');
+// The stick only reads stick-local offsets when the knob cannot be the
+// pointer's target (it is the child whose centre a thumb lands on).
+let styleText = '';
+{
+  const walk = (n) => {
+    if (n.tagName === 'STYLE') styleText += n.textContent;
+    for (const c of n.childNodes || []) walk(c);
+  };
+  walk(body);
+}
+if (!/\.knob\s*\{[^}]*pointer-events:\s*none/.test(styleText)) {
+  fail('the knob is still a pointer target (missing pointer-events:none)');
+}
+const zt0 = pos()[2];
+stick.fire('pointerdown', { pointerId: 7, pointerType: 'touch', buttons: 1, offsetX: 78, offsetY: 78 });
+frames(10);
+if (Math.abs(pos()[2] - zt0) >= 0.05) fail(`a centred stick moved Mo (z ${zt0} -> ${pos()[2]})`);
+stick.fire('pointermove', { pointerId: 7, pointerType: 'touch', buttons: 1, offsetX: 78, offsetY: 20 });
+frames(10);
+const zt1 = pos()[2];
+if (!(zt1 < zt0 - 0.3)) fail(`the stick up did not move Mo (z ${zt0} -> ${zt1})`);
+// A second finger on JUMP must not release the stick.
+jumpBtn.fire('pointerdown', { pointerId: 8, pointerType: 'touch', buttons: 1 });
+frames(4);
+jumpBtn.fire('pointerup', { pointerId: 8, pointerType: 'touch', buttons: 0 });
+frames(8);
+const zt2 = pos()[2];
+if (!(zt2 < zt1 - 0.1)) fail(`lifting JUMP released the stick (z ${zt1} -> ${zt2})`);
+// A mouse hover (no button) must not steer, even with the opposite offset.
+stick.fire('pointermove', { pointerId: 1, pointerType: 'mouse', buttons: 0, offsetX: 78, offsetY: 130 });
+frames(8);
+const zt3 = pos()[2];
+if (!(zt3 < zt2 - 0.1)) fail(`a mouse hover steered the stick (z ${zt2} -> ${zt3})`);
+// Leaving the stick releases it (this handler used to be dead).
+stick.fire('pointerleave', { pointerId: 7, pointerType: 'touch' });
+frames(20);
+const zr = pos()[2];
+frames(10);
+if (Math.abs(pos()[2] - zr) >= 0.1) fail(`the stick stayed held after pointerleave (z ${zr} -> ${pos()[2]})`);
+}
+
 // ── context loss and restore ──
 glStub.lost = true;
 if (count(frame(), 'drawElements') !== 0) fail('a lost context was drawn to');
@@ -193,11 +254,13 @@ const longFrames = Number(process.env.LONG_FRAMES || 900);
 const ceiling = Number(process.env.HEAP_CEILING_MIB || 256) * 1048576;
 let peak = memory.buffer.byteLength;
 gl.calls.length = 0;
+const loopStart = Date.now();
 for (let i = 0; i < longFrames; i++) {
   frame();
   if (gl.calls.length > 100000) gl.calls.length = 0;
   peak = Math.max(peak, memory.buffer.byteLength);
 }
+const msPerFrame = (Date.now() - loopStart) / longFrames;
 if (peak > ceiling) fail(`wasm memory reached ${mib(peak)} MiB over ${longFrames} frames (ceiling ${mib(ceiling)} MiB)`);
 
-console.log(`ok: ${path} [${mode}] -> setup, HUD, idle, run, jump, autopilot up the stairs (sparks ${hud('sparks')}), loss + restore, ${longFrames} more frames at peak ${mib(peak)} MiB`);
+console.log(`ok: ${path} [${mode}] -> setup, HUD, idle, run, jump, touch stick, autopilot up the stairs (sparks ${hud('sparks')}), loss + restore, ${longFrames} more frames at ${msPerFrame.toFixed(2)} ms/frame, peak ${mib(peak)} MiB`);

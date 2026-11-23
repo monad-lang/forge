@@ -8,7 +8,8 @@ edition = "2026"
 # target, so this mote does not admit `native` and `monad test` drops the
 # bin from its sweep (`Mote.native_test_roots`, `Mote.web_only_bin_file`).
 # `web.mo` has no `#[test]` defs and `lib.mo` does not re-export it, so no
-# native test binary reaches it either.
+# native test binary reaches it either. `src/stick.mo` is the native,
+# tested half of the touch stick.
 targets = ["web"]
 
 [[bin]]

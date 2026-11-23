@@ -798,11 +798,14 @@ As built (2026-11-17):
    frame after restore relinks and re-uploads everything.
 5. **`forge_app::web`** (web-only, not re-exported by `lib.mo`):
    `web_mount app rig` / `web_dispatch` / `web_tick` are the bodies of the
-   three loader exports. rAF timestamps -> `dt` (clamped to 0.25 s) ->
+   three loader exports. `web_tick` takes no app: the mounted model lives in
+   oak's state, and passing the app would rebuild it (and its level) on every
+   frame. rAF timestamps -> `dt` (clamped to 0.25 s) ->
    `CameraRig` camera for the canvas aspect -> `app_frame_dt` -> `app_plan`
    -> `webgl_submit`; a canvas click picks against the last frame's world
-   and sets `data-picked`. It drives frames through `web_wasm` directly
-   (`Dom.on_frame`, `Keep`), not through oak.
+   and sets `data-picked`. The page is an Oak program: the canvas, HUD and
+   touch UI are `Oak.Node`s, and the animation-frame subscription drives
+   the frame effect.
 6. **Demo + parity.** `src/main.mo`: a spinning cube with an orbiting
    cylinder and a spinning cap over a textured floor. Parity is structural
    (both backends consume the commands `frame_plan` resolves) and asserted
