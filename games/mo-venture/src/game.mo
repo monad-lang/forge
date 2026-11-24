@@ -26,12 +26,13 @@ use forge_math {Vec3, vec3, v3_add, v3_scale, Quat, quat_mul, quat_from_axis_ang
 use forge_scene {Transform, transform_new, transform_name, entity_transform}
 use forge_schedule {update_s, world_time, time_elapsed}
 use forge_render {color, Light, light_sun, light_with_shadows, light_at, light_toward, world_light, world_set_light}
-use forge_collide {collision_scene}
+use forge_collide {collision_scene, Scene}
 use forge_animate {animate_step, tween_step}
 use forge_app {
     App, app_new, app_add_system, app_set_assets, app_set_initial_world, app_set_clear_color, app_set_light,
     CameraRig, Orbit, orbit_new, orbit_rig, orbit_with_limits, world_orbit_opt, app_add_orbit_camera,
-    world_orbit_follow, world_input, app_initial_world, Input, input_key_pressed, hud_set
+    world_orbit_follow, world_input, app_initial_world, Input, input_key_pressed, hud_set,
+    orbit_forward, orbit_right
 }
 use lib::level {Level, skyway, level_name, level_start, level_kill_y}
 use lib::levels {all_levels}
@@ -48,7 +49,9 @@ use lib::rules {
 }
 use lib::bot {Bot, Thought, world_bot, world_set_bot, bot_think, bot_toggle, bot_on, bot_is_on, bot_resync, bot_restart}
 use lib::controls {keys_intent, autopilot_pressed}
-use lib::companion {follow_intent, leash_step}
+use lib::companion {
+    Follow, follow_seed, follow_step, follow_intent, world_follow_opt, world_set_follow, leash_step
+}
 use lib::tune {tune}
 
 // ── Campaign ────────────────────────────────────────────────────────
@@ -145,9 +148,16 @@ def set_campaign_hero (world : World) (h : I64) : World :=
         Option.none => world
     }
 
+/// The camera's ground-plane basis for the current view: forward and right.
+/// The companion's slot is expressed in it (`companion.mo`), so the follower
+/// stands where the camera sees, not where Mo happens to face.
+pub def camera_basis (world : World) : Pair Vec3 Vec3 :=
+    let o : Orbit := view_orbit world in
+    Pair.pair (orbit_forward o) (orbit_right o)
+
 /// `C` swaps which Mo the player controls; either way, the other one
-/// follows. The companion's intent for this frame is computed here, from
-/// the player's post-swap position and facing.
+/// follows. The companion's intent for this frame is computed here, from the
+/// player's post-swap position and the camera's basis.
 pub def control_step (world : World) : World :=
     let i : Intent := world_intent world in
     let w1 : World := if intent_swapped i then mo_swap world else world in
@@ -161,20 +171,39 @@ pub def control_step (world : World) : World :=
             let p : Entity := p0 in
             match find_companion w2 {
                 Option.none => w2,
-                Option.some c0 =>
-                    let c : Entity := c0 in
-                    let ps : MoState := entity_mo w2 p in
-                    let cs : MoState := entity_mo w2 c in
-                    world_set_follow_intent w2
-                        (follow_intent tune (mo_hero cs) (collision_scene w2) cs
-                            (mo_position w2 c) (mo_position w2 p) (mo_facing ps))
+                Option.some c0 => follow_for w2 p c0
             },
         Option.none => w2
     }
 
+/// Compute the companion's slot and intent for this frame, and remember the
+/// slot (the `mo.follow` resource is what makes the walk latch).
+def follow_for (world : World) (p : Entity) (c : Entity) : World :=
+    let basis : Pair Vec3 Vec3 := camera_basis world in
+    match basis {
+        Pair.pair cam_f0 cam_r0 =>
+            let cam_f : Vec3 := cam_f0 in
+            let cam_r : Vec3 := cam_r0 in
+            let sc : Scene := collision_scene world in
+            let pos : Vec3 := mo_position world c in
+            let pp : Vec3 := mo_position world p in
+            let s : MoState := entity_mo world c in
+            let f0 : Follow := match world_follow_opt world {
+                Option.some x => x,
+                Option.none => follow_seed tune sc pos pp cam_f cam_r
+            } in
+            let f1 : Follow := follow_step tune sc f0 pos pp cam_f cam_r in
+            let w1 : World := world_set_follow world f1 in
+            world_set_follow_intent w1 (follow_intent tune sc s pos f1)
+    }
+
 /// Bring a stranded companion back to the player's side.
 pub def companion_now (world : World) : World :=
-    leash_step tune (level_kill_y (world_level world)) world
+    let basis : Pair Vec3 Vec3 := camera_basis world in
+    match basis {
+        Pair.pair cam_f cam_r =>
+            leash_step tune (collision_scene world) (level_kill_y (world_level world)) cam_f cam_r world
+    }
 
 def key_level (world : World) : I64 :=
     let i : Input := world_input world in
@@ -234,7 +263,7 @@ def camera_at (lv : Level) : Orbit :=
 
 pub def mo_rig (lv : Level) : CameraRig := orbit_rig (camera_at lv)
 
-def view_orbit (world : World) : Orbit :=
+pub def view_orbit (world : World) : Orbit :=
     match world_orbit_opt world {
         Option.some o => o,
         Option.none => camera_at (world_level world)

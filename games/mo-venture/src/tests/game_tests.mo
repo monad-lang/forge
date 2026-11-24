@@ -15,7 +15,9 @@ use lib::{
     intent_ext, mo_hero, mo_ability, mo_with_ability, mo_rest_for, mo_airborne_for,
     find_companion, level_world, level_puzzles, box_name, gate_name, switch_at, gate_box,
     vine_wall, brick_yard, loaded_looks, load, rules_step, set_mo, entity_mo, place_mo,
-    layer_world, layer_climb
+    layer_world, layer_climb,
+    Follow, follow_new, follow_target_of, follow_moving, follow_slot, follow_step, follow_seed, follow_intent,
+    intent_move
 }
 use forge_core::ecs {World, Entity, entity_new, entity_id}
 use forge_core::query {query_entities}
@@ -648,7 +650,9 @@ def test_the_companion_leashes : Bool :=
     match find_companion w0 {
         Option.some c =>
             let w1 : World := place_mo w0 c (vec3 0.0 1.0 40.0) (vec3 0.0 0.0 (0.0 - 1.0)) in
-            let r : Run := play a w1 0 2 in
+            // The leash waits `leash_delay` frames of being stranded (one
+            // catch-up per stranding), so this plays past the delay.
+            let r : Run := play a w1 0 (I64.add tune.leash_delay 8i64) in
             match pair_positions r.world {
                 Option.some ps =>
                     match ps { Pair.pair pp0 cp0 =>
@@ -678,3 +682,142 @@ def test_only_the_player_collects : Bool :=
 
 // ── The new puzzle levels ───────────────────────────────────────────
 
+/// The leash does not fire on the first frame the companion is stranded:
+/// one frame of being out of range must not teleport it (that was the
+/// jitter). It fires once `leash_delay` frames have passed.
+#[test]
+def test_the_leash_waits_before_firing : Bool :=
+    let a : App := mo_venture_on tiny_level in
+    let w0 : World := app_initial_world a in
+    match find_companion w0 {
+        Option.none => false,
+        Option.some c =>
+            let far : Vec3 := vec3 0.0 1.0 40.0 in
+            let w1 : World := place_mo w0 c far (vec3 0.0 0.0 (0.0 - 1.0)) in
+            // Two frames in: it may have WALKED a little (that is the follow
+            // AI), but it has not been teleported back into leash range.
+            let early : Run := play a w1 0 2 in
+            let stayed : Bool :=
+                match find_companion early.world {
+                    Option.none => false,
+                    Option.some c2 =>
+                        let at2 : Vec3 := mo_position early.world c2 in
+                        at2.z > 30.0
+                } in
+            // Past the delay: brought back to the player.
+            let late : Run := play a w1 0 (I64.add tune.leash_delay 8i64) in
+            let back : Bool :=
+                match find_companion late.world {
+                    Option.none => false,
+                    Option.some c3 =>
+                        let at3 : Vec3 := mo_position late.world c3 in
+                        f64_abs at3.z < 12.0
+                } in
+            stayed && back
+    }
+
+// ── The companion's slot: line of sight and no oscillation ──────────
+
+/// A wide flat floor.
+def wide_floor : Scene :=
+    scene_of [entry_new (entity_new 1u64 0u64) (collider (shape_box (vec3 60.0 0.5 60.0)))
+                  (pose_at (vec3 0.0 (0.0 - 0.5) 0.0))]
+
+/// The camera basis the game uses at yaw 0: forward -z, right +x
+/// (`orbit_forward`/`orbit_right`).
+def cam_f : Vec3 := vec3 0.0 0.0 (0.0 - 1.0)
+
+def cam_r : Vec3 := vec3 1.0 0.0 0.0
+
+def feet_at (x : F64) (z : F64) : Vec3 := vec3 x (mo_stand + 0.01) z
+
+/// The slot is off the camera->player axis: behind the player AND to the
+/// camera's right, so the companion is not standing in the middle of the
+/// view on top of what the player is aiming at.
+#[test]
+def test_the_slot_is_off_the_line_of_sight : Bool :=
+    let pp : Vec3 := feet_at 0.0 0.0 in
+    match follow_slot tune wide_floor pp cam_f cam_r {
+        Option.none => false,
+        Option.some s0 =>
+            let s : Vec3 := s0 in
+            // Behind (toward the camera is +z at yaw 0) and to the right (+x).
+            let behind : Bool := s.z > 0.5 in
+            let aside : Bool := f64_abs s.x > 0.5 in
+            // Not within a body's width of the camera->player line (x = 0),
+            // which is what "in the middle of the screen" means.
+            let clear : Bool := f64_abs s.x > mo_stand in
+            behind && aside && clear
+    }
+
+/// The old slot was straight behind the player along the player's facing,
+/// i.e. exactly on the camera axis when the player faces the camera's way.
+/// This pins the regression: a slot whose lateral offset is zero.
+#[test]
+def test_the_slot_is_not_merely_behind : Bool :=
+    let pp : Vec3 := feet_at 0.0 0.0 in
+    match follow_slot tune wide_floor pp cam_f cam_r {
+        Option.none => false,
+        Option.some s0 =>
+            let s : Vec3 := s0 in
+            Bool.not (f64_abs s.x < 0.2) && s.z > 0.0
+    }
+
+/// The slot stands on the ground: its `y` is the floor's surface, not a
+/// point in the air (this is what used to drop the follower and re-fire the
+/// leash).
+#[test]
+def test_the_slot_is_on_the_ground : Bool :=
+    match follow_slot tune wide_floor (feet_at 0.0 0.0) cam_f cam_r {
+        Option.none => false,
+        Option.some s0 => let s : Vec3 := s0 in near 0.001 s.y 0.0
+    }
+
+/// No slot at all when there is no ground: `Option.none` rather than the
+/// player's own feet.
+#[test]
+def test_no_ground_means_no_slot : Bool :=
+    let empty_scene : Scene := scene_of List.empty in
+    match follow_slot tune empty_scene (feet_at 0.0 0.0) cam_f cam_r {
+        Option.none => true,
+        Option.some _ => false
+    }
+
+/// A settled follower does not start walking for a small move (inside
+/// `follow_start`), and does once the player moves past it.
+#[test]
+def test_the_follower_does_not_chase_small_moves : Bool :=
+    let start : Follow := follow_seed tune wide_floor (vec3 2.2 0.7 2.6) (feet_at 0.0 0.0) cam_f cam_r in
+    let still : Follow := follow_step tune wide_floor start (vec3 2.2 0.7 2.6) (feet_at 0.3 0.0) cam_f cam_r in
+    let far : Follow := follow_step tune wide_floor start (vec3 2.2 0.7 2.6) (feet_at 0.0 (0.0 - 6.0)) cam_f cam_r in
+    Bool.not (follow_moving still) && follow_moving far
+
+/// The dead zone: once walking, a follower keeps walking until it is inside
+/// `follow_stop`, so it cannot flip between walking and standing on
+/// consecutive frames near the boundary.
+#[test]
+def test_walking_latches_between_start_and_stop : Bool :=
+    let walking : Follow := { target := vec3 2.2 0.0 2.6, moving := true, stranded := 0, cooldown := 0 : Follow } in
+    // Just inside follow_start but outside follow_stop: still walking.
+    let mid : Follow := follow_step tune wide_floor walking (vec3 2.2 0.7 4.0) (feet_at 0.0 0.0) cam_f cam_r in
+    // Inside follow_stop: stopped.
+    let close : Follow := follow_step tune wide_floor walking (vec3 2.2 0.7 2.6) (feet_at 0.0 0.0) cam_f cam_r in
+    follow_moving mid && Bool.not (follow_moving close)
+
+/// A walker keeps the slot it set out for: the destination does not slide
+/// under it as the player keeps moving (which is what made the follower
+/// reverse direction every few frames).
+#[test]
+def test_a_walker_keeps_its_slot : Bool :=
+    let walking : Follow := { target := vec3 4.0 0.0 4.0, moving := true, stranded := 0, cooldown := 0 : Follow } in
+    let after : Follow := follow_step tune wide_floor walking (vec3 0.0 0.7 0.0) (feet_at 0.0 0.0) cam_f cam_r in
+    let t : Vec3 := follow_target_of after in
+    near 0.001 t.x 4.0 && near 0.001 t.z 4.0
+
+/// A standing follower asks for no movement at all.
+#[test]
+def test_a_settled_follower_stands_still : Bool :=
+    let settled : Follow := follow_new (vec3 2.2 0.0 2.6) in
+    let i : Intent := follow_intent tune wide_floor mo_rest (vec3 2.2 0.7 2.6) settled in
+    let m : Vec3 := intent_move i in
+    near 0.001 (v3_length m) 0.0

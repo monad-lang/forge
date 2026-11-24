@@ -41,6 +41,17 @@ workspace = true
 [dependencies.forge_webgl]
 workspace = true
 
+# `web_event` names `WsEvent`/`WsData`, which `Subscription.websocket`'s
+# handler takes. G9 says these types cannot be reached THROUGH another mote's
+# re-export, so the mote that declares them is a direct dependency here.
+# The ticket response is JSON (`{"path":...}`); the page parses it with the
+# same reader the broker writes it with.
+[dependencies.json]
+workspace = true
+
+[dependencies.web_event]
+workspace = true
+
 [dependencies.oak]
 workspace = true
 

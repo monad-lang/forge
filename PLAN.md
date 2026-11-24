@@ -1016,15 +1016,149 @@ Each engine phase lands with the game features that need it.
     HUD, help and the touch controls (stick, JUMP, DASH, camera, ability,
     SWAP, autopilot, restart, next) are `Oak.Node`s drawn from the model;
     `web/index.html` is only the loader.
-  - **Next: two players over the web.** monad has a browser WebSocket
-    client (`web_wasm::websocket`, `oak Subscription.websocket`,
-    `Command.ws_send`). A co-op mode needs a pin at or past
-    `5d54cd68` (this pin, `6ff8cdb0`, predates it): the host runs the
-    game authoritatively, clients send their hero's intent, and the
-    companion's follow AI is replaced by player 2. The per-entity intent
-    split above is the groundwork.
-  - **Still ahead:** enemies, a run cycle, and a physics pass (Phase 12)
-    for pushable crates.
+  - **The companion's slot (2026-11-24).** Two defects, one cause: the
+    follower aimed at "behind the player along the player's facing", which
+    is the camera->player axis whenever the camera is behind Mo, so it
+    stood in the middle of the screen; and that slot jumped by the whole
+    follow distance on every turn, so it ran back and forth.
+    - The slot is now placed in **camera space**: `follow_behind` (2.6)
+      toward the camera and `follow_side` (2.2) to its right, so the
+      companion sits low and off-centre, never on the sight line
+      (`companion.mo`: `follow_slot`). Candidates shrink toward the player
+      until one has ground under it (`scan_step`), and a slot with no
+      ground is `Option.none` rather than the player's own feet.
+    - **No oscillation.** The slot lives in the `mo.follow` resource
+      (`Follow`): the walk latches on at `follow_start` (2.4) and off at
+      `follow_stop` (0.9), and a walker keeps the slot it set out for so
+      the destination cannot slide under it. The leash fires only after
+      `leash_delay` (12 frames) of being stranded and then not again for
+      `leash_cooldown` (90), so an outrun player gets one catch-up rather
+      than a teleport per frame; it lands the follower *standing on the
+      ground* under its slot, never at a guessed height (the old code
+      dropped it, which re-fired the leash next frame).
+    - **Tests** (`game_tests.mo`): the slot is off the camera axis, on the
+      ground, `Option.none` without ground, does not chase small moves,
+      latches between start and stop, keeps its slot while walking, and a
+      settled follower asks for zero movement.
+  - **v4: two players over the web (2026-11-24).** A host's page steps the
+    game it already has and ships what it sees; a guest's page sends its own
+    hero's intent and draws the host's pose. The broker relays frames and
+    decides nothing about the game. Player 2 *is* the companion: with a
+    guest present the companion's follow AI is displaced by the guest's
+    intent (`mo.mo`'s `intent_for`), and with no guest the code path is the
+    single-player one — which every existing playthrough still pins.
+    - **The seam in the game** (`games/mo-venture/src/coop.mo`): the guest's
+      intent is a world component (`mo.coop.guest`) that wins over the
+      follow AI, the host's `state` frame is a pure read of the world, and a
+      guest's world takes the host's two poses. `mo_coop_hooks` bundles the
+      five functions `forge-app` cannot know (the state text, its inverse,
+      the intent write, the clear, and this game's keys-plus-camera intent).
+    - **The wire** (`forge_online::net`, 29 tests): every number is an
+      INTEGER. `init` has no F64 parser and `Json`'s number reader only
+      yields `I64`, so positions travel as milli-units and axes quantized to
+      `-1000..1000`. That makes the whole contract exactly round-trippable,
+      and a hostile peer cannot hand the game a NaN or a `1e300`.
+    - **Rooms, tickets and the relay's policy** (`forge_online::rooms`, 52
+      tests): one host and at most one guest per 4-char code drawn from an
+      alphabet without `0/O/1/I/L`; codes expire; tickets are single-use,
+      short-lived and bound to the signed-in subject.
+    - **The broker** (`services/forge-online`): `GET /api/ws-ticket` mints
+      the ticket (session-gated, origin-checked) and the upgrade is
+      `/api/ws/<ticket>` — a path segment, because a browser cannot set a
+      header on a `WebSocket` and `Ctx` exposes no query. The broker now
+      serves through moon's TRANSFORMER path (`Server.run_t` +
+      `dispatch_t`): a 101 needs the connection's takeover slot, which a
+      `Request -> IO Response` route cannot carry. That is the one routing
+      change; everything else is a scoped handler. `broker_tests` pins that
+      `/api/ws/<bad ticket>` answers 401 rather than falling through to 404.
+    - **The page** (`forge-app/src/coop.mo` + `web.mo`): roles, the socket
+      URL, the send rates (a host 15 Hz, a guest 20 Hz — COUNTS of frames,
+      so no clock and no drift) and what an incoming frame means are native
+      and tested (35 tests). The socket is opened IMPERATIVELY and drained
+      one frame per tick, because oak applies subscriptions only at mount;
+      a browser `fetch` resolves between frames, so the ticket is a
+      per-frame state machine, never an effect loop.
+    - **End-to-end**: `scripts/web-smoke.sh coop` plays the broker with a
+      scripted `WebSocket` and a stubbed `/api/ws-ticket`, and checks that a
+      guest's intent moves the companion (the discriminator against the
+      follow AI), that `welcome` shows the code, that state frames carry
+      integers inside the wire's bound, and that `left` ends the session and
+      stops sending.
+  - **Still ahead:** enemies, a run cycle. Two real browsers over
+    `scripts/serve-online.sh` remains a manual check (see README).
+
+### Phase 12 (planned): advanced physics — planets, radial gravity, escape
+
+The requested shape: Mo can land on **spherical planets with inward
+gravity**, walk around them, and **escape the gravity field** with a cannon
+or another launcher. Today `move_and_slide` is single-plane: gravity is
+`-y`, "ground" is `normal.y >= ground_y` (`forge-collide/src/controller.mo`),
+and the snap and step probes all assume up. This is a controller rewrite, not
+a tuning change; the plan keeps the single-plane path intact and adds a
+gravity-frame path beside it.
+
+1. **A gravity frame, not a gravity constant.** `Gravity` becomes a resolved
+   field at a point: `gravity_at (world) (p) : Pair Vec3 F64` (direction,
+   magnitude), computed by a new `forge-gravity` mote from
+   *gravity volumes* — a planet (centre, radius, surface g, falloff
+   `r^-2` inside a `field_radius`, zero outside) and a uniform plane (the
+   current levels, unchanged). `mo_step` reads `gravity_at` instead of
+   `tune.gravity`. **Pure and testable:** a sphere's field points at its
+   centre and falls as `1/r²`; a plane's is constant; two sources sum; the
+   field is zero outside every `field_radius` (that is what "escape"
+   means). A test asserts a ballistic arc launched from a planet surface
+   leaves the field iff its speed exceeds the escape speed
+   `sqrt(2gR)` computed by the same code — the physical claim, checked in
+   a unit test.
+
+2. **An oriented mover.** `move_and_slide` takes an *up* vector and a capsule
+   axis: cast the capsule along `up = -gravity_dir`, project the motion on
+   the plane perpendicular to `up`, and define "ground" as
+   `dot(normal, up) >= ground_y` rather than `normal.y >= ground_y`. The step
+   and snap probes point along `up`. The existing call sites pass
+   `up = +y`, so the present behaviour is the `up = +y` case of the new
+   signature, pinned by all existing controller tests.
+
+3. **An up vector that turns smoothly.** A planet's field rotates as Mo
+   walks; snapping `up` to the local field each frame makes the character
+   spin in one-frame jitters at the poles and at seams between volumes.
+   Carry a smoothed `up` in `MoState` and rotate it toward
+   `-gravity_dir` at a capped rate (`turn_rate` already exists for this)
+   with a slerp, so the character banks around a small planet the way it
+   should and never snaps. The camera follows the same smoothed up
+   (`orbit` gains an `up`).
+
+4. **Sphere collision.** `forge-collide` has boxes and capsules but no
+   sphere-as-world. Add a `sphere_solid` collider (already have
+   `mesh_sphere` for rendering) and a **sphere-vs-capsule** query, or reuse
+   the existing GJK/EPA path with a sphere shape (preferred: it exists).
+   Landing on a curved surface is then the ordinary contact path with a
+   curved normal, which is exactly what step 2 needs. A test walks a capsule
+   around a sphere for a full turn and asserts `grounded` every frame and
+   constant height above the surface.
+
+5. **The cannon (escape).** A launcher is a level entity with a direction
+   and a speed. Firing sets `MoState.vel` and a short "launched" window
+   (input does not damp the launch velocity for `launch_lock` seconds, or
+   the controller's `ground_friction` eats it). Once `gravity_at` is zero
+   the ordinary ballistics of step 1 carry Mo; when it re-enters a field
+   the frame turns and it falls toward that planet. **Tests:** a cannon at
+   a planet's surface launches to the neighbouring planet's field and lands
+   (a whole trip, assert `grounded` on arrival and the frame switched); a
+   launch below escape speed falls back to the same planet.
+
+6. **The levels and the HUD.** A `Lunar`/`Orbit` pair of levels in the
+   campaign data (a small planet next to a big one with a cannon between),
+   a HUD line for the current gravity ("1.0 g", "0.0 g — free fall"), and
+   the autopilot's route unchanged (the bot is planar; the new levels get
+   their own simple route or are left to the player).
+
+7. **Where it lands.** `forge-gravity` is a new native mote with tests.
+   `forge-collide` gains the oriented mover and the sphere tests.
+   `games/mo-venture` gains the levels, the cannon and the HUD line.
+   Estimated order: 1 and 2 first (both fully testable without any new
+   rendering), then 3, then 4, then 5-6. The single-plane campaign must
+   stay green at every step — that is the regression gate.
 
 ### Phase 11: forge-animate — animation (P8) — **done**
 
@@ -1196,6 +1330,10 @@ Recorded in full, with repros and the workarounds above, in
 | G17 | a user type named like a prelude type loses its constructor qualifier: with `pub type Signal (A : Type) { mk (x : A) }`, `match s { Signal.mk x => x }` fails with "ambiguous constructor `mk`: could resolve to either `std.derive::CopyNames` or `sys.sys::Stat`" (`sys::Signal` exists). Regressed between `b0fe09df` and `4916d8fa`; verified on `nightly-2026-11-21-4916d8fa`; renaming the type to `Sig` fixes the repro | forge-reactive's constructor is `Signal.signal_mk` |
 | G18 | `#[derive Copy]` on a large struct (~16+ fields) explodes test-driver IR codegen: `test: elaborate`/`check` are fast, then `test: ir` never appears (27 fields: >120 s). `#[derive Clone]` alone is fine; an explicit identity `Copy` is 3 s. Verified on `nightly-2026-11-22-aaf39e36` | explicit identity `Copy` instances (`Pair.pair x x`) for Mo Venture's large structs; `game_tests` 41/41 and the playthroughs 9/9 |
 | G19 | two loaded modules declare the same bare type name (`forge_core::commands::Command` and `oak::app::Command`), so the wasm build's whole-program scope resolves neither: `monad check` passes, but the build reports `forge_app.web::on_frame`/`update` "cannot resolve `{ .. }`" and `oak_wasm` "ambiguous constructor `none`". Reproduced with `scripts/web-build.sh mo-venture` on `nightly-2026-11-22-aaf39e36` | forge-core's type is `WorldCommand`; the build and all four `web-smoke` modes pass |
+| G20 | a `do` block whose result type is a non-`Unit` `IO` cannot contain a `let x : T := v in` statement: `def f (n : String) : IO Role := do { let x : String := n in IO.pure (Role.idle x) }` fails to parse with "expected '('" at the `do {`. It parses with `let x <- IO.pure n;` instead, and a `let ... in` outside a `do` block is fine. Verified on `nightly-2026-11-22-aaf39e36`. The error names the `do` brace, not the offending `let`, so the message points at the wrong line | forge-online's `relay.mo` binds every `let` in a `do` with `<-` (or hoists it into its own helper) |
+| G21 | `#[derive]` with no argument list is not rejected as a bad attribute: it silently produces no instance, and the first *use* of the type in a `do` block then reports "expected '('" at that use. Verified on `nightly-2026-11-22-aaf39e36` | always spell the list (`#[derive Copy Clone]` plus the `use std::derive` macros), or write the identity instance by hand |
+| G22 | `#[derive Copy]` fails on any struct with a *generic* field: `cannot derive Copy for a generic type`. `#[derive Copy Clone]` on a struct holding a `String` is fine, so the failure is about the derive's own codegen, not the field | forge-online's `relay.mo` writes `pub instance Copy Id` by hand |
+| G23 | a `struct` whose name shadows a prelude/`init` type (`pub struct Id { raw : String }`) type-checks, then fails to ELABORATE at the first field access on a `<-`-bound value: `let id <- ConnId.next r; relay_register r (id.raw) conn` reports "cannot resolve `{ .. }`: the matched value's type isn't known here". `monad check` passes; only `monad test` (or a build) reaches elaboration. Same family as G17, one layer down: there the *constructor* became ambiguous, here the *field* loses its type. Verified on `nightly-2026-11-22-aaf39e36` | renamed to `ConnId` and read it through a getter (`ConnId.raw_of`), with the value passed as a typed parameter |
 
 The `4916d8fa` pin also carries monad's fixes for G2, G3, G4, G8, G9 and G12 (commits `856591f7`, `95b4e846`, `f1a257b6`, `6a571381`, `3592122b`, `3295e316`). Forge has not yet dropped those workarounds; that's the next cleanup. G4 now makes an unresolved `use` an error.
 
@@ -1256,6 +1394,6 @@ when executed. Keep every transformer-stack path exercised by a test.
 - [x] Light: forge-render `Light` resource (`set_light` command, `plan_light`, per-fragment lighting in forge-webgl, `material_unlit`), shadow box (`light_view_projection`, texel-snapped) and `plan_casters`; forge-webgl shadow map (lazy depth texture + framebuffer + depth program, depth pass with polygon offset, 3x3 PCF on unit 1, falls back to lit-only)
 - [x] Mo Venture v2: mid-air jump, reliable taps, gem fix, movers, juice, sun and shadows, campaign of four levels, on-screen touch controls
 - [x] Mo Venture v3: Xiaozhu and Xiaomao as companions (swap control), climb, spin and slam abilities, crates/switches/gates, Vine Wall and Brick Yard, the page as an Oak program
-- [ ] Mo Venture v4: two players over a WebSocket (needs the monad pin at or past `5d54cd68`)
+- [x] Mo Venture v4: two players over a WebSocket — the wire, the broker relay, the game seam and the page; `web-smoke.sh coop` drives host and guest through a scripted broker
 - [ ] Phase 12: forge-physics (rigid bodies, sequential-impulse solver over a generic `Constraint` class, joints, sleeping, render interpolation, deterministic step, character controller)
 - [x] Web input: `forge_app::input` (`Input` resource, `app_frame_input`) + keyboard/pointer/wheel listeners in `forge_app::web`; demo WASD movement; browser run setup (`scripts/web-serve.sh`, `web/`, README.md)

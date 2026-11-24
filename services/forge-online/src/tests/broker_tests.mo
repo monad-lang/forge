@@ -15,7 +15,8 @@ use forge_online::{
 }
 use lib::config {Config}
 use lib::session {forge_sessions_new}
-use lib::dispatch {AppState, dispatch}
+use lib::dispatch {AppState, dispatch, dispatch_t, coop_new, coop_tickets, coop_relay}
+use moon::handler_t {HandlerT}
 
 def test_config : Config :=
     { public_origin := "http://127.0.0.1:8099", port := 8099u16,
@@ -36,9 +37,13 @@ def make_state : IO (Option AppState) := do {
             let http <- OauthHttp.fake List.empty List.empty;
             let atp <- atp_deps_new http (JwtVerifier.fake true);
             let cache <- Static.new_cache;
+            let coop <- coop_new;
+            let tickets <- IO.pure (coop_tickets coop);
+            let relay <- IO.pure (coop_relay coop);
             let st : AppState :=
                 { cfg := test_config, sessions := sessions, states := states, atp := atp,
-                  static_cfg := StaticConfig.default test_config.static_dir, cache := cache
+                  static_cfg := StaticConfig.default test_config.static_dir, cache := cache,
+                  relay := relay, tickets := tickets
                   : AppState };
             IO.pure (Option.some st)
         }
@@ -167,6 +172,53 @@ def test_dev_sign_in_then_me_then_csrf_logout : IO Bool := do {
                     }
                 }
             }
+        }
+    }
+}
+
+// ── the co-op socket route ──────────────────────────────────────────
+//
+// `dispatch_t` is what the binary serves: the plain routes plus the relay
+// under `/api/ws/`. These pin that the socket route is REACHABLE (a wrong
+// mount would answer the page's 404) and that it fails closed (an unknown
+// ticket is refused before any upgrade), without opening a socket.
+
+#[test]
+def test_an_api_route_still_answers_through_dispatch_t : IO Bool := do {
+    let st_r <- make_state;
+    match st_r {
+        Option.none => IO.pure false,
+        Option.some st => do {
+            let res <- HandlerT.to_old (dispatch_t st) (get path_providers);
+            IO.pure (res.status == 200u16 && String.contains (body_text res) "\"atproto\"")
+        }
+    }
+}
+
+#[test]
+def test_the_static_fallback_still_works_through_dispatch_t : IO Bool := do {
+    let st_r <- make_state;
+    match st_r {
+        Option.none => IO.pure false,
+        Option.some st => do {
+            let res <- HandlerT.to_old (dispatch_t st) (get "/");
+            // Nothing is built in this test, so 404 is the correct answer --
+            // and it is the dispatcher's own 404, not the router's.
+            IO.pure (res.status == 404u16)
+        }
+    }
+}
+
+/// An unknown ticket is refused with 401 and never upgrades.
+#[test]
+def test_the_socket_route_refuses_an_unknown_ticket : IO Bool := do {
+    let st_r <- make_state;
+    match st_r {
+        Option.none => IO.pure false,
+        Option.some st => do {
+            let req : Request := with_header (get "/api/ws/not-a-ticket") origin_header test_config.public_origin;
+            let res <- HandlerT.to_old (dispatch_t st) req;
+            IO.pure (res.status == 401u16)
         }
     }
 }

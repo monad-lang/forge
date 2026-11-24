@@ -5,6 +5,8 @@
 #   devenv shell -- scripts/web-smoke.sh            # both apps: webgl2, webgl1, none
 #                                                   # (+ webgl1-nodepth for mo-venture: no shadow maps)
 #   devenv shell -- scripts/web-smoke.sh mo-venture # one app (or `demo`)
+#   devenv shell -- scripts/web-smoke.sh coop      # mo-venture 2-player, with a
+#                                                  # scripted broker socket
 #   NO_BUILD=1 scripts/web-smoke.sh                 # rerun on the last builds
 #   MONAD_SRC=/path/to/monad scripts/web-smoke.sh
 #
@@ -35,3 +37,17 @@ smoke() {
 only="${1:-all}"
 if [ "$only" = all ] || [ "$only" = demo ]; then smoke demo forge_webgl_smoke.mjs; fi
 if [ "$only" = all ] || [ "$only" = mo-venture ]; then smoke mo-venture mo_venture_smoke.mjs webgl1-nodepth; fi
+# The co-op smoke drives a scripted broker (`fake WebSocket` + a ticket fetch),
+# so it runs once per app, not once per GL mode: the socket does not care which
+# context the canvas got. It is `all`'s last step so the GL modes are reported
+# first if it fails.
+if [ "$only" = all ] || [ "$only" = coop ]; then
+    [ -n "${NO_BUILD:-}" ] || "$root/scripts/web-build.sh" mo-venture
+    out="$root/target/web/mo-venture"
+    mkdir -p "$out/smoke"
+    for f in stub_dom.mjs stub_gl.mjs; do
+        git -C "$monad_src" show "${rev}:wasm/web/smoke/$f" > "$out/smoke/$f"
+    done
+    cp "$root/tests/web/coop_smoke.mjs" "$out/smoke/"
+    node "$out/smoke/coop_smoke.mjs" "$out/app.wasm" webgl2
+fi

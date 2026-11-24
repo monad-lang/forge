@@ -192,6 +192,12 @@ def mk (vel : Vec3) (grounded : Bool) (since_ground : F64) (since_press : F64) (
       facing := facing, hero := hero, climbing := climbing, ability := ability,
       ability_age := ability_age : MoState }
 
+/// `s` with its ground contact replaced (a co-op guest is told where the
+/// host's hero stands, including whether it is on the ground).
+pub def mo_with_grounded (s : MoState) (g : Bool) : MoState :=
+    mk s.vel g s.since_ground s.since_press s.since_jump s.jumping s.dashed s.air_used
+       s.facing s.hero s.climbing s.ability s.ability_age
+
 pub def mo_with_vel (s : MoState) (v : Vec3) : MoState :=
     mk v s.grounded s.since_ground s.since_press s.since_jump s.jumping s.dashed s.air_used
        s.facing s.hero s.climbing s.ability s.ability_age
@@ -611,10 +617,44 @@ def keep_momentum (before : MoState) (s : MoState) (carry : Vec3) (dt : F64) : M
     then mo_with_vel s (v3_add s.vel (vec3 (carry.x / dt) 0.0 (carry.z / dt)))
     else s
 
+/// The companion's intent override, as a world component: a co-op guest
+/// writes it and `intent_for` reads it. Absent in single-player, which is why
+/// the follow AI is unchanged there (`lib::coop` owns the type and the write).
+pub def guest_intent_name : String := "mo.coop.guest"
+
+def as_guest_intent (v : Any) : Option Intent :=
+    match v { Any.any x => let i : Option Intent := x in i }
+
+/// The guest's intent, when a co-op guest is driving the companion.
+pub def world_guest_intent (world : World) : Option Intent :=
+    match List.first (query_entities world [guest_intent_name] []) {
+        Option.some e =>
+            match get_component_named world e guest_intent_name {
+                Option.some v => as_guest_intent v,
+                Option.none => Option.none
+            },
+        Option.none => Option.none
+    }
+
 /// The intent that drives `e`: the player's, the companion's, or (for an
 /// unmarked Mo in an older world) the player's.
+///
+/// A co-op guest replaces the companion's follow AI: when the guest has
+/// written an intent, it wins over `follow_intent`. With no guest in the world
+/// this is exactly the single-player rule, so every existing playthrough is
+/// unchanged.
 def intent_for (world : World) (e : Entity) : Intent :=
-    if has_marker world e companion_name then world_follow_intent world else world_intent world
+    if has_marker world e companion_name
+    then companion_intent world
+    else world_intent world
+
+/// The companion's intent: the guest's when there is one, the follow AI
+/// otherwise.
+def companion_intent (world : World) : Intent :=
+    match world_guest_intent world {
+        Option.some i => i,
+        Option.none => world_follow_intent world
+    }
 
 def step_mo (world : World) (e : Entity) : World :=
     let dt : F64 := time_delta (world_time world) in

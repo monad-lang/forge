@@ -172,6 +172,16 @@ git_subdir = "std"
 checksum = "sha256:06667398c454e6217ffc235f7b58d8c723f8ed233181d0e30a09f3268e06cc9e"
 
 [[mote]]
+name = "web_event"
+version = "0.1.0"
+source = "git+https://github.com/monad-lang/monad.git?branch=main&subdir=motes/web_event#aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_url = "https://github.com/monad-lang/monad.git"
+git_ref = "branch:main"
+git_commit = "aaf39e36ff48349dc2f92133bb25d235dd33d447"
+git_subdir = "motes/web_event"
+checksum = "sha256:b3c6775297cd75a84d20bc309d9d985543d589ed9083f157ae8a7bd098279ecb"
+
+[[mote]]
 name = "web_wasm"
 version = "0.1.0"
 source = "git+https://github.com/monad-lang/monad.git?rev=aaf39e36ff48349dc2f92133bb25d235dd33d447&subdir=motes/web_wasm#aaf39e36ff48349dc2f92133bb25d235dd33d447"

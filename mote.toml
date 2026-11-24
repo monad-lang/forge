@@ -68,6 +68,11 @@ git = "https://github.com/monad-lang/monad.git"
 branch = "main"
 subdir = "motes/oak_wasm"
 
+[workspace.dependencies.web_event]
+git = "https://github.com/monad-lang/monad.git"
+branch = "main"
+subdir = "motes/web_event"
+
 [workspace.dependencies.web_wasm]
 git = "https://github.com/monad-lang/monad.git"
 # Keep current: `monad update` (README.md, "Keeping the monad pin current").

@@ -7,9 +7,10 @@
 use forge_app::web {web_mount, web_dispatch, web_tick}
 use lib::level {skyway}
 use lib::game {mo_venture, mo_rig}
+use lib::coop {mo_coop_hooks}
 
 #[export "c"]
-def oak_mount : IO Unit := web_mount mo_venture (mo_rig skyway)
+def oak_mount : IO Unit := web_mount mo_venture (mo_rig skyway) mo_coop_hooks
 
 #[export "c"]
 def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler

@@ -48,6 +48,7 @@ use lib::orbit {
     Orbit, orbit_new, orbit_rig, orbit_forward, orbit_right, world_orbit_opt, app_add_orbit_camera
 }
 use lib::web {web_mount, web_dispatch, web_tick}
+use lib::coop {coop_hooks_none}
 use forge_collide {Collider, collider, shape_box, set_collider}
 use forge_animate {
     Easing, Property, key_vec3, track, channel, Clip, clip, animator, LoopMode, set_animator, animate_system
@@ -248,7 +249,7 @@ def start_orbit : Orbit := orbit_new (vec3 0.5 0.0 0.0) 0.4636 0.4205 8.573 0.9
 def rig : CameraRig := orbit_rig start_orbit
 
 #[export "c"]
-def oak_mount : IO Unit := web_mount demo rig
+def oak_mount : IO Unit := web_mount demo rig coop_hooks_none
 
 #[export "c"]
 def oak_dispatch_event (handler : I64) : IO Unit := web_dispatch handler

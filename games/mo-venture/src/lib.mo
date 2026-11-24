@@ -57,7 +57,10 @@ pub use lib::bot {
     toward, ground_ahead, ground_at, wall_ahead
 }
 
-pub use lib::companion {follow_intent, leash_step}
+pub use lib::companion {
+    Follow, follow_new, follow_name, follow_target_of, follow_moving, world_follow_opt, world_set_follow,
+    follow_slot, follow_step, follow_seed, follow_intent, leash_step, ground_y_at, slot_probe_drop
+}
 
 pub use lib::controls {keys_intent, autopilot_pressed}
 
@@ -66,4 +69,12 @@ pub use lib::game {
     world_level_index, campaign_step, banner_step, mo_rig, mo_sun, intent_step, animate_level, spin_step,
     control_step, companion_now,
     mo_venture_levels, mo_venture_on, mo_venture, mo_venture_levels_autopilot, mo_venture_autopilot
+}
+
+// Co-op: a guest's intent for the companion, and the state a host ships to
+// that guest. Native and tested; the socket glue is `forge_app::web`.
+pub use lib::coop {
+    world_set_guest_intent, world_clear_guest_intent, has_guest, intent_of_wire,
+    hero_of, coop_state, coop_state_text, apply_state, apply_state_text,
+    coop_input_intent, mo_coop_hooks
 }

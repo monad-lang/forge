@@ -56,3 +56,18 @@ pub use lib::hud {
 pub use lib::pick {pick_reach, world_pick}
 
 pub use lib::orbit {orbit_set_target, orbit_set_angles, follow_alpha, orbit_follow, world_orbit_follow}
+
+// The client's co-op decisions (roles, ticket URL, send rates, incoming
+// frames). Pure and native; `web.mo` is only the oak glue around it.
+pub use lib::coop {
+    CoopRole, is_solo, is_host, is_guest, role_code, role_peer,
+    ws_origin, socket_url, state_every, intent_every, state_ready, intent_ready,
+    Coop, coop_new, coop_role, coop_url, coop_notice, coop_state, coop_guest_intent,
+    coop_pending_code, peer_gone, display_code, peer_quiet,
+    with_code, with_url, with_notice, failed, hello, create_msg, join_msg, bad_code_notice,
+    welcomed, ended, received, received_msg, heard_state, heard_intent, tick,
+    state_due, intent_due, sent, guest_ready, state_line, state_line_of,
+    intent_of_input, encode_state, end_session, coop_protocol_name,
+    CoopHooks, coop_hooks, coop_hooks_none, coop_state_text_of, coop_apply_state_text,
+    coop_set_guest_intent, coop_clear_guest, coop_intent_of_input
+}

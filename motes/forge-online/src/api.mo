@@ -27,6 +27,12 @@ pub def path_dev_auth : String := "/auth/dev"
 
 pub def path_ws_ticket : String := "/api/ws-ticket"
 
+/// The co-op socket route, as a prefix: the upgrade names its single-use
+/// ticket in the last segment (`/api/ws/<ticket>`), so the route is mounted on
+/// `path_ws_prefix ++ ticket`. `Ctx` exposes the path but not the query, which
+/// is why the ticket travels here rather than in `?t=`.
+pub def path_ws_prefix : String := "/api/ws/"
+
 pub def provider_start_path (p : Provider) : String :=
     String.concat_list ["/auth/", provider_name p, "/start"]
 

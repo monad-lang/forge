@@ -41,3 +41,9 @@ workspace = true
 
 [dependencies.forge_animate]
 workspace = true
+
+# The co-op wire (`net`, `rooms`) and its types: the game stores a guest's
+# intent and builds the state a host ships, so it names `forge_online`'s
+# wire directly rather than through forge_app (G12).
+[dependencies.forge_online]
+workspace = true

@@ -316,8 +316,11 @@ def step_all (dt : F64) (r : AnimRun) (es : List Entity) : AnimRun :=
 
 /// One frame of every animator, by `dt` seconds.
 pub def animate_by (dt : F64) (world : World) : World :=
-    let r : AnimRun := step_all dt { world := world, events := [] : AnimRun }
-                            (query_entities world [animator_name, transform_name] []) in
+    // The initial `AnimRun` and the entity list are bound first: a struct
+    // literal in a non-final argument position does not parse as an argument.
+    let start : AnimRun := { world := world, events := [] : AnimRun } in
+    let es : List Entity := query_entities world [animator_name, transform_name] [] in
+    let r : AnimRun := step_all dt start es in
     set_events r.world (List.reverse r.events)
 
 /// One frame of every animator, by the world clock's delta.

@@ -42,17 +42,22 @@ use std::derive {}
 use init::copy {Copy}
 use web_wasm::types {Node}
 use web_wasm::dom {Dom.query}
+use web_wasm::window {Window.origin}
+use web_wasm::fetch {Fetch.begin, Fetch.poll, Fetch.status, Fetch.read}
+use web_wasm::types {WebSocket, RequestId}
+use web_wasm::websocket {WebSocket.connect, WebSocket.next, WebSocket.send}
 use web_wasm::media {Media.matches}
 use web_wasm::console {Console.log}
 use oak {WebEvent, ListenerFlags, HandlerResult, Subscription}
 use oak::typed {Oak.Node}
 use oak::elements {
-    Html.attr, Html.button, Html.canvas, Html.class_, Html.div, Html.id_, Html.kbd, Html.span,
-    Html.style, Html.style_attr, Html.text
+    Html.attr, Html.button, Html.canvas, Html.class_, Html.div, Html.id_, Html.input, Html.kbd,
+    Html.placeholder, Html.span, Html.style, Html.style_attr, Html.text, Html.type_, Html.value_
 }
 use oak::events {
-    Html.on, Html.on_click_with, Html.on_pointerdown, Html.on_pointerup, Html.on_pointermove,
-    Html.on_pointerleave, Html.on_pointercancel, Html.on_wheel
+    Html.on, Html.on_click, Html.on_click_with, Html.on_input, Html.on_pointerdown,
+    Html.on_pointerup, Html.on_pointermove, Html.on_pointerleave, Html.on_pointercancel,
+    Html.on_submit_prevent, Html.on_wheel
 }
 use oak::app {Command, Host, Program}
 use oak_wasm::program {Runtime.mount, Runtime.dispatch, Runtime.tick}
@@ -63,6 +68,10 @@ use forge_core::ecs {World, Entity, entity_id, empty_world}
 use forge_math {v3_zero}
 use forge_render {Camera, FramePlan, Picked, camera_screen_ray, pick_entity}
 use forge_render {Assets}
+use forge_online::api {path_ws_ticket}
+use forge_online::net {NetMsg, WireIntent, net_encode, wire_neutral, wire_intent, coop_protocol, role_host, role_guest}
+use web_event::websocket {WsEvent, WsData, WsData.text_of}
+use json::json {Json, Json.parse, Json.get_object, Json.object_get, Json.get_str}
 use forge_webgl {
     WebGlRenderer, webgl_attach, webgl_submit, webgl_resize, webgl_client_size, Size2,
     size_width, size_height
@@ -75,10 +84,26 @@ use lib::orbit {world_camera_rig}
 use lib::hud {Hud, world_hud, hud_lookup}
 use lib::stick {stick_radius, stick_dirs, knob_of}
 use lib::pick {world_pick}
+use lib::coop {
+    CoopRole, Coop, coop_new, coop_role, coop_url, coop_notice, coop_state, coop_guest_intent,
+    is_solo, is_host, is_guest, display_code, peer_gone, tick, state_due, intent_due, sent,
+    received, with_code, with_url, with_notice, failed, hello, create_msg, join_msg,
+    bad_code_notice, end_session, coop_protocol_name, socket_url, state_line,
+    CoopHooks, coop_hooks_none, coop_state_text_of, coop_apply_state_text,
+    coop_set_guest_intent, coop_clear_guest, coop_intent_of_input
+}
 use lib::input {
     Input, InputEvent, input_empty, input_apply, input_end_frame,
     input_key_down, input_key_up, input_pointer_move, input_pointer_down, input_pointer_up,
     input_pointer_leave, input_wheel, input_focus_lost, input_wheel_pixels
+}
+
+// `RequestId` names an entry in the browser's fetch table. A poll reads it
+// once per frame, and the model holds it across the frames in between, so
+// sharing the id is a bit copy. `web_wasm` does not declare this instance at
+// the pin.
+pub instance Copy RequestId {
+    def copy (r : RequestId) : Pair RequestId RequestId := Pair.pair r r
 }
 
 // ── Model ───────────────────────────────────────────────────────────
@@ -104,29 +129,50 @@ pub struct WebModel {
     /// The pointer that owns the touch stick; -1 when none.
     stick_id : I64,
     /// The combined oak_ui + forge stylesheet, built once at mount.
-    css : String
+    css : String,
+    /// Co-op: this page's role and what the peer sent. Solo by default, so a
+    /// page that never opens the panel behaves exactly as before.
+    coop : Coop,
+    /// What only the game can answer (its state frame, its own intent).
+    hooks : CoopHooks,
+    /// The in-flight ticket request. A browser `fetch` resolves between
+    /// frames, so this is a state machine across ticks -- polling it inside
+    /// one effect spins and exhausts the wasm heap.
+    ticket_req : Option RequestId,
+    /// The live socket, once one is open. Held here rather than driven by
+    /// `Subscription.websocket`: oak applies subscriptions only at MOUNT, so a
+    /// socket a player asks for later has to be opened here and drained per
+    /// frame.
+    socket : Option WebSocket,
+    /// Did the player ask to HOST? Both intents open the same socket, and the
+    /// relay needs `create` for one and `join <code>` for the other, so the
+    /// choice has to survive the ticket round trip.
+    wants_host : Bool
 }
 
 pub instance Copy WebModel {
     def copy (m : WebModel) : Pair WebModel WebModel := Pair.pair m m
 }
 
-def model_new_with (a : App) (rig : CameraRig) (css : String) : WebModel :=
+def model_new_with (a : App) (rig : CameraRig) (css : String) (hooks : CoopHooks) : WebModel :=
     { app := a, rig := rig, world := app_initial_world a, input := input_empty,
       last_ms := 0.0 - 1.0, renderer := Option.none, status := "", picked := 0 - 1,
       vw := 1.0, vh := 1.0, touch := false, setting_up := false, knob_x := 0.0, knob_y := 0.0,
-      held := List.empty, stick_id := 0 - 1, css := css : WebModel }
+      held := List.empty, stick_id := 0 - 1, css := css, coop := coop_new,
+      hooks := hooks, ticket_req := Option.none, socket := Option.none,
+      wants_host := false : WebModel }
 
 /// The mounted model. The stylesheet is static (two fixed themes), so it is
 /// built here, once, rather than in `view` on every render.
-def model_new (a : App) (rig : CameraRig) : WebModel :=
+def model_new (a : App) (rig : CameraRig) (hooks : CoopHooks) : WebModel :=
     model_new_with a rig
-        (String.concat (Ui.stylesheet_auto Ui.Theme.light Ui.Theme.dark) forge_css)
+        (String.concat (Ui.stylesheet_auto Ui.Theme.light Ui.Theme.dark) forge_css) hooks
 
 /// The tick's program needs an init value it never uses (the mounted model
 /// is in oak's state; `Runtime.tick` reads only update/view/subscriptions).
 /// Keep it cheap: no app or level construction.
-def model_blank : WebModel := model_new_with app_new (camera_rig v3_zero v3_zero 1.0) ""
+def model_blank : WebModel :=
+    model_new_with app_new (camera_rig v3_zero v3_zero 1.0) "" coop_hooks_none
 
 // ── Messages ────────────────────────────────────────────────────────
 
@@ -148,6 +194,28 @@ pub type WebMsg {
     release,
     click (x : F64) (y : F64),
     window_blur,
+    /// The socket delivered `text` (a `WsEvent` already unwrapped).
+    net (text : String),
+    /// The socket opened: say hello.
+    net_open,
+    /// The socket closed or failed, with the reason to show.
+    net_closed (reason : String),
+    /// The ticket request began (the id the fetch is polled by).
+    ticket_started (req : RequestId),
+    /// The socket object is ready to store (from the effect).
+    socket_opened (w : WebSocket),
+    /// The ticket came back: `url` is the socket URL, `""` for a refusal.
+    coop_ticket (url : String),
+    /// The ticket request is still pending: poll it again next frame.
+    poll_again,
+    /// The player wants to host.
+    coop_host,
+    /// The player typed in the join field.
+    coop_code (code : String),
+    /// The player submitted the code they typed.
+    coop_join,
+    /// The player left deliberately.
+    coop_leave,
     noop
 }
 
@@ -157,7 +225,18 @@ pub type WebMsg {
 /// and `view` stay pure.
 pub type WebFx {
     setup (app : App),
-    step (r : WebGlRenderer) (app : App) (rig : CameraRig) (world : World) (input : Input) (dt : F64)
+    step (r : WebGlRenderer) (app : App) (rig : CameraRig) (world : World) (input : Input) (dt : F64),
+    /// Ask the broker for a single-use socket ticket (`/api/ws-ticket`).
+    ticket,
+    /// Open the co-op socket at `url`.
+    open_socket (url : String),
+    /// Send `text` on `w`. A send has nothing to report: a failure shows up as
+    /// the socket's own close on the next drain.
+    send_text (w : WebSocket) (text : String),
+    /// Take one queued frame off `w`.
+    pump (w : WebSocket),
+    /// One poll of the ticket request `r`.
+    poll_ticket (r : RequestId)
 }
 
 // ── Touch stick ─────────────────────────────────────────────────────
@@ -319,38 +398,292 @@ def click_model (m : WebModel) (x : F64) (y : F64) : WebModel :=
         }) in
     { m with picked := id }
 
+// ── Co-op ───────────────────────────────────────────────────────────
+//
+// Every decision (roles, rates, what a frame means) is in `lib::coop`, native
+// and tested, and everything about the game is in the game (via `CoopHooks`).
+// What is here is only what needs a socket or the page:
+//
+//   * `coop_host` asks the broker for a ticket, and the ticket's answer opens
+//     the socket (a browser fetch resolves between frames, so the request is
+//     polled from `on_frame`, never inside one effect);
+//   * the socket is opened imperatively and drained one frame per tick,
+//     because oak applies subscriptions only at mount;
+//   * `stepped_pair` turns "should I send this frame" into a send of the world
+//     the step just produced.
+
+def with_renderer (m : WebModel) (r : WebGlRenderer) (touch : Bool) : WebModel :=
+    { m with renderer := Option.some r, touch := touch, status := "ok" }
+
+def with_status (m : WebModel) (e : String) : WebModel :=
+    { m with status := e }
+
+def with_ticket (m : WebModel) (req : RequestId) : WebModel :=
+    { m with ticket_req := Option.some req }
+
+def with_socket (m : WebModel) (w : WebSocket) : WebModel :=
+    { m with socket := Option.some w }
+
+/// A model change with nothing to do.
+def settled (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    Pair.pair m Command.none
+
+/// A frame just stepped.
+///
+/// The co-op world changes are applied HERE, after the step, not in
+/// `coop_net`: a socket frame and a step's result land in the same batch, and
+/// the step's world was captured before the frame arrived, so writing the
+/// guest's intent in `coop_net` would be overwritten by the step a moment
+/// later. Applying it to the world the step just produced makes the intent
+/// survive to drive the NEXT step.
+///
+/// `input_end_frame` runs first, so a press is reported exactly once.
+def stepped_pair (m : WebModel) (world : World) (vw : F64) (vh : F64)
+    : Pair WebModel (Command WebFx WebMsg) :=
+    let m1 : WebModel :=
+        { m with world := world, vw := vw, vh := vh, input := input_end_frame m.input } in
+    let m2 : WebModel := { m1 with world := coop_world m1 m1.world } in
+    coop_send m2
+
+/// Fold this page's co-op state into the world: a host writes the guest's
+/// intent (which displaces the companion's follow AI), a guest copies the
+/// host's heroes, and a page with no session drops any intent a previous one
+/// left behind.
+def coop_world (m : WebModel) (world : World) : World :=
+    if is_host (coop_role m.coop)
+    then
+        match coop_guest_intent m.coop {
+            Option.some i => coop_set_guest_intent m.hooks world i,
+            Option.none => coop_clear_guest m.hooks world
+        }
+    else if is_guest (coop_role m.coop)
+    then coop_apply_state_text m.hooks world (guest_frame_text m.coop)
+    else coop_clear_guest m.hooks world
+
+/// The guest's last state frame as text, so it can be re-applied (the guest's
+/// own simulation runs every frame; the host's pose must win).
+def guest_frame_text (c : Coop) : String :=
+    match coop_state c {
+        Option.none => "",
+        Option.some s => net_encode (NetMsg.state s)
+    }
+
+/// Age the session by one frame and send what this page owes the peer.
+def coop_send (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    let aged : WebModel := { m with coop := tick m.coop } in
+    if is_solo (coop_role aged.coop)
+    then settled aged
+    else if state_due aged.coop
+    then
+        let text : String := coop_state_text_of aged.hooks aged.world in
+        let sent_m : WebModel := { aged with coop := sent aged.coop } in
+        Pair.pair sent_m (send_cmd sent_m.socket text)
+    else if intent_due aged.coop
+    then
+        let text : String := net_encode (NetMsg.intent (coop_intent_of_input aged.hooks aged.world aged.input)) in
+        let sent_m : WebModel := { aged with coop := sent aged.coop } in
+        Pair.pair sent_m (send_cmd sent_m.socket text)
+    else settled aged
+
+/// Send `text` on `socket`, or nothing when there is no socket (a session that
+/// has ended must not keep writing).
+def send_cmd (socket : Option WebSocket) (text : String) : Command WebFx WebMsg :=
+    match socket {
+        Option.none => Command.none,
+        Option.some w => Command.perform (WebFx.send_text w text)
+    }
+
+/// Is a session already under way (or starting)? A second click on Host or
+/// Join must not open a second socket: the relay would seat it as a second
+/// connection and the first would keep sending into a room it left. (The
+/// branches are spelled out because a `match` in an `else` needs parens.)
+def coop_busy (m : WebModel) : Bool :=
+    if Bool.not (is_solo (coop_role m.coop))
+    then true
+    else if has_socket m.socket
+    then true
+    else if has_ticket m.ticket_req
+    then true
+    else Bool.not (String.is_empty (coop_url m.coop))
+
+def has_socket (s : Option WebSocket) : Bool :=
+    match s {
+        Option.none => false,
+        Option.some _ => true
+    }
+
+def has_ticket (r : Option RequestId) : Bool :=
+    match r {
+        Option.none => false,
+        Option.some _ => true
+    }
+
+/// The host: ask the broker for a ticket.
+def coop_host (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    if coop_busy m
+    then settled m
+    else Pair.pair { m with wants_host := true } (Command.perform WebFx.ticket)
+
+/// The join field changed: remember it. (`with_code` is the native, tested
+/// half; this only threads it.)
+def with_code_typed (m : WebModel) (code : String) : WebModel :=
+    { m with coop := with_code m.coop code }
+
+/// The guest submitted the typed code: validate it, then open a socket (asking
+/// for a ticket first if there is none).
+def coop_join (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    let m2 : WebModel := { m with coop := coop_code_note m.coop } in
+    if Bool.not (coop_code_ok m2.coop) then settled m2
+    else if coop_busy m2 then settled m2
+    else coop_open_for m2
+
+/// Leave deliberately.
+def coop_leave (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    let m1 : WebModel :=
+        { m with coop := end_session m.coop, socket := Option.none, wants_host := false } in
+    let cmd : Command WebFx WebMsg :=
+        (match m.socket {
+            Option.none => Command.none,
+            Option.some w => Command.perform (WebFx.send_text w (net_encode (NetMsg.left "you left the game")))
+        }) in
+    Pair.pair m1 cmd
+
+/// Open a socket for the code the player typed, asking for a ticket if needed.
+def coop_open_for (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    let url : String := coop_url m.coop in
+    if String.length url == 0 then Pair.pair m (Command.perform WebFx.ticket)
+    else Pair.pair m (Command.perform (WebFx.open_socket url))
+
+/// The code the player typed, validated: an unwell-formed code gets a notice.
+def coop_code_ok (c : Coop) : Bool :=
+    match join_msg c {
+        Option.none => false,
+        Option.some _ => true
+    }
+
+def coop_code_note (c : Coop) : Coop :=
+    if coop_code_ok c then c else with_notice c bad_code_notice
+
+/// The ticket came back: `url` is the socket URL, `""` for a refusal.
+def coop_ticket (m : WebModel) (url : String) : Pair WebModel (Command WebFx WebMsg) :=
+    let m1 : WebModel := { m with ticket_req := Option.none } in
+    if String.length url == 0
+    then
+        let m2 : WebModel := { m1 with coop := failed m1.coop "could not get a co-op ticket (are you signed in?)" } in
+        settled m2
+    else
+        let m2 : WebModel := { m1 with coop := with_url m1.coop url } in
+        Pair.pair m2 (Command.perform (WebFx.open_socket url))
+
+/// The socket opened: say hello, and then create or join if the player has
+/// already asked to. (`host` is "asked for a ticket and not joining"; `guest`
+/// is "typed a code".) The relay requires `hello` first, either way.
+def coop_open (m : WebModel) : Pair WebModel (Command WebFx WebMsg) :=
+    match m.socket {
+        Option.none => settled m,
+        Option.some w => coop_open_with m w
+    }
+
+/// Say hello on the open socket `w`, then `create` (a host) or `join <code>`
+/// (a guest). `w` arrives as a typed parameter: a `<-`-free binder cannot be
+/// read twice inside one `do`-shaped expression.
+def coop_open_with (m : WebModel) (w : WebSocket) : Pair WebModel (Command WebFx WebMsg) :=
+    let hello_text : String := hello m.coop "" in
+    let opening : Command WebFx WebMsg := Command.perform (WebFx.send_text w hello_text) in
+    if m.wants_host
+    then do_open_with m opening w create_msg
+    else
+        match join_msg m.coop {
+            Option.none => Pair.pair m opening,
+            Option.some join_text => do_open_with m opening w join_text
+        }
+
+/// Say hello and then the room message (`create` or `join <code>`).
+def do_open_with (m : WebModel) (hello_cmd : Command WebFx WebMsg) (w : WebSocket) (text : String)
+    : Pair WebModel (Command WebFx WebMsg) :=
+    Pair.pair m (Command.batch [ hello_cmd, Command.perform (WebFx.send_text w text) ])
+
+/// A text frame from the socket: fold it into the session model. The world is
+/// touched in `stepped_pair`, after the step (see the comment there).
+def coop_net (m : WebModel) (text : String) : Pair WebModel (Command WebFx WebMsg) :=
+    settled { m with coop := received m.coop text }
+
+/// The socket went away: back to solo with the reason showing, and the world
+/// back to the follow AI.
+def coop_closed (m : WebModel) (reason : String) : Pair WebModel (Command WebFx WebMsg) :=
+    let why : String := if String.length reason == 0 then "the connection closed" else reason in
+    let m1 : WebModel :=
+        { m with coop := failed m.coop why, socket := Option.none, ticket_req := Option.none,
+          wants_host := false } in
+    Pair.pair { m1 with world := coop_clear_guest m1.hooks m1.world } Command.none
+
+/// Everything a frame does after (or instead of) drawing: poll the ticket
+/// request if one is in flight, and take one queued socket frame.
+///
+/// The `batch` runs its commands in order, and `after_render` effects see the
+/// patched DOM. One socket frame per frame is enough at the wire's 15-20 Hz
+/// and keeps the effect total bounded (a `drain` that answers every queued
+/// event can re-enter the fold without ever yielding).
+def frame_net_cmds (m : WebModel) : List (Command WebFx WebMsg) :=
+    List.append (ticket_cmd m) (pump_cmds m.socket)
+
+/// The ticket poll for this frame, while a request is in flight.
+def ticket_cmd (m : WebModel) : List (Command WebFx WebMsg) :=
+    match m.ticket_req {
+        Option.none => List.empty,
+        Option.some req => [ Command.after_render (WebFx.poll_ticket req) ]
+    }
+
+def pump_cmds (socket : Option WebSocket) : List (Command WebFx WebMsg) :=
+    match socket {
+        Option.none => List.empty,
+        Option.some w => [ Command.after_render (WebFx.pump w) ]
+    }
+
 def on_frame (m : WebModel) (t : F64) : Pair WebModel (Command WebFx WebMsg) :=
+    let net : List (Command WebFx WebMsg) := frame_net_cmds m in
     match m.renderer {
         Option.none =>
             if m.setting_up
-            then Pair.pair ({ m with last_ms := t }) Command.none
-            else Pair.pair { m with setting_up := true, last_ms := t }
-                     (Command.after_render (WebFx.setup m.app)),
+            then Pair.pair ({ m with last_ms := t }) (Command.batch net)
+            else
+                Pair.pair { m with setting_up := true, last_ms := t }
+                    (Command.batch (List.append net [ Command.after_render (WebFx.setup m.app) ])),
         Option.some r =>
             let dt : F64 := dt_between m.last_ms t in
             Pair.pair { m with last_ms := t }
-                (Command.after_render (WebFx.step r m.app m.rig m.world m.input dt))
+                (Command.batch (List.append net
+                    [ Command.after_render (WebFx.step r m.app m.rig m.world m.input dt) ]))
     }
 
 def update (m : WebModel) (msg : WebMsg) : Pair WebModel (Command WebFx WebMsg) :=
     match msg {
         WebMsg.frame t => on_frame m t,
-        WebMsg.ready r touch =>
-            Pair.pair ({ m with renderer := Option.some r, touch := touch, status := "ok" }) Command.none,
-        WebMsg.failed e => Pair.pair ({ m with status := e }) Command.none,
-        WebMsg.stepped world vw vh =>
-            Pair.pair ({ m with world := world, vw := vw, vh := vh, input := input_end_frame m.input }) Command.none,
-        WebMsg.key code down => Pair.pair (key_model m code down) Command.none,
-        WebMsg.pointer kind x y button => Pair.pair (pointer_model m kind x y button) Command.none,
-        WebMsg.wheel dy mode => Pair.pair (with_input m (input_wheel (input_wheel_pixels dy mode))) Command.none,
-        WebMsg.stick_start id x y => Pair.pair (stick_start_model m id x y) Command.none,
-        WebMsg.stick id x y => Pair.pair (stick_move_model m id x y) Command.none,
-        WebMsg.stick_release id => Pair.pair (stick_release_for m id) Command.none,
-        WebMsg.touch_key code down => Pair.pair (touch_model m code down) Command.none,
-        WebMsg.release => Pair.pair (release_all m m.held) Command.none,
-        WebMsg.click x y => Pair.pair (click_model m x y) Command.none,
-        WebMsg.window_blur => Pair.pair (with_input (release_all m m.held) input_focus_lost) Command.none,
-        WebMsg.noop => Pair.pair m Command.none
+        WebMsg.ready r touch => settled (with_renderer m r touch),
+        WebMsg.failed e => settled (with_status m e),
+        WebMsg.stepped world vw vh => stepped_pair m world vw vh,
+        WebMsg.key code down => settled (key_model m code down),
+        WebMsg.pointer kind x y button => settled (pointer_model m kind x y button),
+        WebMsg.wheel dy mode => settled (with_input m (input_wheel (input_wheel_pixels dy mode))),
+        WebMsg.stick_start id x y => settled (stick_start_model m id x y),
+        WebMsg.stick id x y => settled (stick_move_model m id x y),
+        WebMsg.stick_release id => settled (stick_release_for m id),
+        WebMsg.touch_key code down => settled (touch_model m code down),
+        WebMsg.release => settled (release_all m m.held),
+        WebMsg.click x y => settled (click_model m x y),
+        WebMsg.window_blur => settled (with_input (release_all m m.held) input_focus_lost),
+        WebMsg.net text => coop_net m text,
+        WebMsg.net_open => coop_open m,
+        WebMsg.net_closed reason => coop_closed m reason,
+        WebMsg.ticket_started req => settled (with_ticket m req),
+        WebMsg.socket_opened w => settled (with_socket m w),
+        WebMsg.coop_ticket url => coop_ticket m url,
+        WebMsg.poll_again => settled m,
+        WebMsg.coop_host => coop_host m,
+        WebMsg.coop_code code => settled (with_code_typed m code),
+        WebMsg.coop_join => coop_join m,
+        WebMsg.coop_leave => coop_leave m,
+        WebMsg.noop => settled m
     }
 
 // ── Subscriptions ───────────────────────────────────────────────────
@@ -478,6 +811,48 @@ def touch_ui (m : WebModel) (h : Hud) : Oak.Node WebMsg :=
           tbutton "t-restart" ["tbtn", "tbtn-small", "tbtn-right-3"] "↺" "Backspace",
           tbutton "t-next" ["tbtn", "tbtn-small", "tbtn-right-4"] "▶▶" "Enter" ]
 
+// ── The co-op panel ─────────────────────────────────────────────────
+//
+// Solo: Host, and a field to join. Hosting: the code to read out, and Leave.
+// Both: a line naming the peer, and the relay's last notice.
+
+def coop_button (id : String) (label : String) (msg : WebMsg) : Oak.Node WebMsg :=
+    Html.button
+        [ Html.id_ id, Html.class_ ["forge-cbtn"], Html.attr "type" "button",
+          Html.on_click msg ]
+        [Html.text label]
+
+/// The joining field: an ordinary text input (no key subscription of its own;
+/// the window keydown handler does not care, and the room code is short).
+def coop_join_field : Oak.Node WebMsg :=
+    Html.input
+        [ Html.id_ "coop-input", Html.class_ ["forge-cinput"], Html.attr "type" "text",
+          Html.attr "maxlength" "4", Html.attr "autocomplete" "off",
+          Html.attr "autocapitalize" "off", Html.attr "spellcheck" "false",
+          Html.placeholder "code", Html.on_input (fn (code : String) => WebMsg.coop_code code) ]
+
+def coop_panel (m : WebModel) : Oak.Node WebMsg :=
+    let code : String := display_code m.coop in
+    let notice : String := coop_notice m.coop in
+    let peer : String := state_line m.coop in
+    let has_code : Bool := Bool.not (String.is_empty code) in
+    Html.div [Html.id_ "coop", Html.class_ ["forge-panel", "forge-coop"]]
+        [ Html.div [Html.id_ "coop-title", Html.class_ ["forge-coop-title"]]
+              [Html.text (if is_solo (coop_role m.coop) then "co-op" else "co-op · connected")],
+          (if has_code
+           then Html.div List.empty
+                    [Html.span [Html.class_ ["forge-label"]] [Html.text "code "],
+                     Html.span [Html.id_ "coop-code", Html.class_ ["forge-code"]] [Html.text code]]
+           else Html.span [Html.id_ "coop-code", Html.class_ ["forge-hidden"]] List.empty),
+          (if is_solo (coop_role m.coop)
+           then Html.div List.empty [ coop_button "coop-host" "Host" WebMsg.coop_host ]
+           else Html.div List.empty [ coop_button "coop-leave" "Leave" WebMsg.coop_leave ]),
+          Html.div List.empty [ coop_join_field, coop_button "coop-join" "Join" WebMsg.coop_join ],
+          (if String.is_empty notice
+           then Html.span [Html.id_ "coop-notice", Html.class_ ["forge-hidden"]] List.empty
+           else Html.div [Html.id_ "coop-notice", Html.class_ ["forge-notice"]] [Html.text notice]),
+          Html.div [Html.id_ "coop-peer", Html.class_ ["forge-label"]] [Html.text peer] ]
+
 /// The ability button says what `X` does for the controlled hero.
 def ability_label (h : Hud) : String :=
     if hud_text h "hero" == "Xiaomao Mo" then "SPIN" else "SLAM"
@@ -508,6 +883,7 @@ def view (m : WebModel) : Oak.Node WebMsg :=
           panel_stats h,
           panel_message h,
           status_node m,
+          coop_panel m,
           Html.span [Html.id_ "picked", Html.class_ ["forge-hidden"]]
               [Html.text (I64.to_string m.picked)],
           (if m.touch then touch_ui m h else help_panel) ]
@@ -540,7 +916,12 @@ def forge_css : String :=
           ".tbtn-camleft { right: 7.7rem; bottom: 7rem; width: 56px; height: 56px; }\n",
           ".tbtn-camright { right: 2.7rem; bottom: 8.6rem; width: 56px; height: 56px; }\n",
           ".tbtn-small { top: 4.2rem; width: 48px; height: 48px; font-size: 13px; }\n",
-          ".tbtn-right-1 { right: .9rem; } .tbtn-right-2 { right: 4.1rem; } .tbtn-right-3 { right: 7.3rem; } .tbtn-right-4 { right: 10.5rem; }\n",
+          ".tbtn-right-1 { right: .9rem; } .tbtn-right-2 { right: 4.1rem; } .tbtn-right-3 { right: 7.3rem; } .tbtn-right-4 { right: 10.5rem; }\n",          "#coop { right: .8rem; bottom: .8rem; pointer-events: auto; display: flex; flex-direction: column; gap: .3rem; align-items: flex-end; }\n",
+          ".forge-coop-title { font-weight: 700; letter-spacing: .04em; opacity: .8; }\n",
+          ".forge-code { font: 700 16px ui-monospace, monospace; letter-spacing: .18em; text-transform: uppercase; }\n",
+          ".forge-cbtn { border-radius: 6px; border: 1px solid rgba(255, 255, 255, .45); background: rgba(255, 255, 255, .12); color: #fff; font: inherit; padding: .15rem .6rem; cursor: pointer; }\n",
+          ".forge-cinput { width: 5.2rem; border-radius: 6px; border: 1px solid rgba(255, 255, 255, .45); background: rgba(0, 0, 0, .25); color: #fff; font: 700 14px ui-monospace, monospace; letter-spacing: .18em; text-transform: uppercase; padding: .15rem .4rem; }\n",
+          ".forge-notice { color: #ffd9a0; max-width: 22ch; }\n",
           "" ]
 
 // ── Effects ─────────────────────────────────────────────────────────
@@ -584,10 +965,98 @@ def step_effect (r : WebGlRenderer) (a : App) (rig : CameraRig) (world : World) 
     return (Option.some (WebMsg.stepped (frame_world f) (size_width size) (size_height size)))
 }
 
+// ── The co-op effects ───────────────────────────────────────────────
+//
+// A browser fetch resolves between frames and a socket completes in the
+// background, so none of these waits: each starts (or polls, or reads) one
+// step and returns.
+
+/// Ask the broker for a socket ticket.
+def ticket_effect : IO (Option WebMsg) := do {
+    let origin <- Window.origin;
+    let url : String := String.concat origin path_ws_ticket;
+    let req <- Fetch.begin url 0i64 "";
+    IO.pure (Option.some (WebMsg.ticket_started req))
+}
+
+/// `{"path":"/api/ws/<ticket>"}` -> `ws://origin/api/ws/<ticket>`. Anything
+/// else answers `""`, which the model shows as a refusal.
+def ticket_url (origin : String) (body : String) : String :=
+    match Json.parse body {
+        Result.err _ => "",
+        Result.ok j0 =>
+            let j : Json := j0 in
+            match Json.get_object j {
+                Result.err _ => "",
+                Result.ok o =>
+                    match Json.object_get "path" o {
+                        Option.none => "",
+                        Option.some v =>
+                            match Json.get_str v {
+                                Result.err _ => "",
+                                Result.ok path => socket_url origin path
+                            }
+                    }
+            }
+    }
+
+/// One poll of the ticket request: still pending means come back next frame.
+def poll_ticket_effect (req : RequestId) : IO (Option WebMsg) := do {
+    let state <- Fetch.poll req;
+    if state == 0i64 then IO.pure (Option.some (WebMsg.poll_again))
+    else if Bool.not (state == 1i64) then IO.pure (Option.some (WebMsg.coop_ticket ""))
+    else do {
+        let status <- Fetch.status req;
+        if Bool.not (status == 200i64) then IO.pure (Option.some (WebMsg.coop_ticket ""))
+        else do {
+            let origin <- Window.origin;
+            let body <- Fetch.read req 4096i64;
+            IO.pure (Option.some (WebMsg.coop_ticket (ticket_url origin body)))
+        }
+    }
+}
+
+/// Open the socket. It completes in the background, so this only stores the
+/// handle; the `opened` event arrives through the per-frame drain.
+def socket_effect (url : String) : IO (Option WebMsg) := do {
+    let w <- WebSocket.connect url [coop_protocol_name];
+    IO.pure (Option.some (WebMsg.socket_opened w))
+}
+
+def send_text_effect (w : WebSocket) (text : String) : IO (Option WebMsg) := do {
+    let _ <- WebSocket.send w (WsData.text text);
+    IO.pure Option.none
+}
+
+/// A socket event as the message that folds it in.
+def ws_msg (ev : WsEvent) : WebMsg :=
+    match ev {
+        WsEvent.opened _protocol => WebMsg.net_open,
+        WsEvent.message d => WebMsg.net (WsData.text_of d),
+        WsEvent.closed _code reason _clean => WebMsg.net_closed reason,
+        WsEvent.failed => WebMsg.net_closed "could not reach the co-op server"
+    }
+
+/// Take ONE queued event off the socket. One per frame, not a drain loop: an
+/// effect that answers every queued event can re-enter the fold without ever
+/// yielding (and a socket opened before a burst of frames has a long queue).
+def pump_effect (w : WebSocket) : IO (Option WebMsg) := do {
+    let ev <- WebSocket.next w;
+    match ev {
+        Option.none => IO.pure Option.none,
+        Option.some e => IO.pure (Option.some (ws_msg e))
+    }
+}
+
 def run_fx (fx : WebFx) : IO (Option WebMsg) :=
     match fx {
         WebFx.setup a => setup_effect a,
         WebFx.step r a rig world input dt => step_effect r a rig world input dt,
+        WebFx.ticket => ticket_effect,
+        WebFx.poll_ticket req => poll_ticket_effect req,
+        WebFx.open_socket url => socket_effect url,
+        WebFx.send_text w text => send_text_effect w text,
+        WebFx.pump w => pump_effect w
     }
 
 def web_host : Host IO WebFx WebMsg := Host.host run_fx
@@ -595,8 +1064,8 @@ def web_host : Host IO WebFx WebMsg := Host.host run_fx
 // ── The program and the exports ─────────────────────────────────────
 
 /// The page as an Oak program over `a` and `rig` (mount only).
-pub def web_program (a : App) (rig : CameraRig) : Program WebModel WebMsg WebFx :=
-    Program.with_subs (model_new a rig) update view subscriptions
+pub def web_program (a : App) (rig : CameraRig) (hooks : CoopHooks) : Program WebModel WebMsg WebFx :=
+    Program.with_subs (model_new a rig hooks) update view subscriptions
 
 /// The program a tick needs. `Runtime.tick` reads only update/view/
 /// subscriptions from it; the mounted model is in oak's state, so `init` is
@@ -605,8 +1074,10 @@ pub def web_program (a : App) (rig : CameraRig) : Program WebModel WebMsg WebFx 
 pub def web_program_blank : Program WebModel WebMsg WebFx :=
     Program.with_subs model_blank update view subscriptions
 
-/// The `oak_mount` body.
-pub def web_mount (a : App) (rig : CameraRig) : IO Unit := Runtime.mount (web_program a rig)
+/// The `oak_mount` body. The hooks are the game's half of co-op (its state
+/// frame, its own intent); the demo passes `coop_hooks_none`.
+pub def web_mount (a : App) (rig : CameraRig) (hooks : CoopHooks) : IO Unit :=
+    Runtime.mount (web_program a rig hooks)
 
 /// The `oak_dispatch_event` body.
 pub def web_dispatch (handler : I64) : IO Unit := Runtime.dispatch handler

@@ -104,6 +104,29 @@ view (`motes/forge-app/src/web.mo`); `web/index.html` is only the loader.
 Falling off sends Mo back to the last checkpoint. The HUD shows the level,
 sparks, time and falls.
 
+### Play with two players
+
+The page has a co-op panel (bottom right). One player presses **Host** and
+reads out the four-letter code; the other types it and presses **Join**. The
+host's browser runs the game and ships what it sees; the guest sends its own
+controls and draws the host's world, so **player 2 is the companion** -- with
+a guest connected, the follow AI stops and that hero obeys the guest. `C`
+(swap) stays the host's.
+
+Both players must be signed in and both pages must be served by the same
+origin, because the co-op socket is authorised by a single-use ticket from
+`GET /api/ws-ticket`:
+
+```sh
+devenv shell -- scripts/serve-online.sh mo-venture   # the broker, page and API
+```
+
+Then open <http://127.0.0.1:8080> in two windows (a second browser profile or
+a private window, so the two sessions are distinct). The socket protocol is
+`forge-coop-1`; the room code expires when both sides have been idle. What a
+guest sees is the host's run -- there is no rollback, so a lagging guest
+lags, it does not diverge.
+
 The game is in `games/mo-venture`: `src/level.mo` and `src/levels.mo` are
 the levels as data, `src/mo.mo` Mo's controller, `src/rules.mo` the rules
 and HUD, `src/game.mo` the app and the campaign, and `src/bot.mo` the
@@ -163,6 +186,12 @@ running and jumping by key and the autopilot climbing the stairs. Both then
 run long (6000 demo frames, 900 more Mo Venture frames) and fail if the wasm
 memory passes a ceiling (`HEAP_CEILING_MIB`, 128 and 256; `LONG_FRAMES`
 sets the length). `scripts/web-smoke.sh mo-venture` runs one app.
+
+`scripts/web-smoke.sh coop` (or `all`, which ends with it) plays the broker
+for a two-player session: a scripted `WebSocket` and a stubbed
+`/api/ws-ticket`, then Host, hello, `welcome`, state frames at the wire's
+rate, a guest intent that must move the companion, and `left`. It runs once
+per build -- the socket does not care which GL mode the canvas got.
 
 ## Writing a web game
 
